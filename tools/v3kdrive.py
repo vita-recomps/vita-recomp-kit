@@ -1,9 +1,10 @@
-"""Drive the portable Vita3K (Qt frontend) for baseline runs, without taking keyboard focus.
+r"""Drive the portable Vita3K (Qt frontend) for baseline runs, without taking keyboard focus.
 
-Buttons are posted to the game window as WM_KEYDOWN/WM_KEYUP with scancodes, so the
-user's foreground window never receives them. Screenshots use Vita3K's own capture
-(bound to F12 in config.yml), which reads the emulated framebuffer. FPS is sampled
-from the game window title ("... | 30 FPS (33 ms) | 960x544 | ...").
+Buttons go through our Vita3K fork's input pipe (\\.\pipe\v3kdrive, enabled by
+VITA3K_INPUT_PIPE, which `launch` sets). Builds without it (the upstream release) get
+WM_KEYDOWN/WM_KEYUP posted to the game window instead, which Qt ignores while the window
+is unfocused. Neither path takes keyboard focus. Screenshots use PrintWindow on the game
+window. FPS is sampled from the game window title ("... | 30 FPS (33 ms) | 960x544 | ...").
 
 usage:
   python -I v3kdrive.py <vita3k dir> launch <TITLEID> [Vulkan|OpenGL]  start Vita3K and boot the app
@@ -17,7 +18,7 @@ Steps (comma separated):
                                           up down left right l r ls_up ls_down ls_left ls_right
                                           rs_up rs_down rs_left rs_right
   <button>*N        tap N times (400 ms apart)
-  hold:<button>:ms  hold for ms
+  hold:<button>:ms  hold for ms; several buttons/sticks with +, e.g. hold:ls_up+r:2000
   wait <ms>         sleep, sampling FPS every 500 ms
   shot:<path>       PNG of the game window (PrintWindow; no focus needed)
   mark:<label>      label the following FPS samples in the CSV
@@ -40,6 +41,9 @@ KEYS = {
     "rs_right": (0x4C, 0x26, False),
     "f12": (0x7B, 0x58, False),
 }
+PIPE = r"\\.\pipe\v3kdrive"
+STICKS = {"ls_up": (1, -1.0), "ls_down": (1, 1.0), "ls_left": (0, -1.0), "ls_right": (0, 1.0),
+          "rs_up": (3, -1.0), "rs_down": (3, 1.0), "rs_left": (2, -1.0), "rs_right": (2, 1.0)}
 TITLE_RE = re.compile(r"\| (?:\S+) \| (\d+) FPS \((\d+) ms\) \| (\d+)x(\d+)")
 
 
@@ -144,11 +148,57 @@ class Sampler:
             time.sleep(min(0.5, max(0.0, end - time.time())))
 
 
+class Pad:
+    """Holds buttons through the input pipe, or posts keys to the window without it."""
+
+    def __init__(self, hwnd):
+        self.hwnd, self.pipe, self.connected = hwnd, None, False
+
+    def connect(self):
+        # The fork creates the pipe when the game first reads the pad, a few seconds after boot.
+        # A build without it never does; fall back to posted keys after 15 s.
+        if self.connected:
+            return
+        self.connected = True
+        end = time.time() + 15
+        while time.time() < end:
+            try:
+                # O_WRONLY without O_CREAT opens the existing pipe; open(..., "w") would try to create it
+                self.pipe = os.fdopen(os.open(PIPE, os.O_WRONLY | os.O_BINARY), "w", newline="\n")
+                break
+            except OSError:
+                time.sleep(0.1)  # not created yet, or busy between clients
+        print("input:", "pipe" if self.pipe else "posted keys")
+
+    def set(self, names):
+        self.connect()
+        if not self.pipe:
+            for b in names:
+                key(self.hwnd, b, True)
+            return
+        axes = [0.0] * 4
+        for b in names:
+            if b in STICKS:
+                axes[STICKS[b][0]] = STICKS[b][1]
+        self.pipe.write("hold " + " ".join(b for b in names if b not in STICKS) + "\n")
+        self.pipe.write("axes " + " ".join(str(a) for a in axes) + "\n")
+        self.pipe.flush()
+
+    def release(self, names):
+        if not self.pipe:
+            for b in names:
+                key(self.hwnd, b, False)
+            return
+        self.pipe.write("hold none\naxes 0 0 0 0\n")
+        self.pipe.flush()
+
+
 def run(steps, fps_csv):
     hwnd, _ = game_window()
     if not hwnd:
         sys.exit("no Vita3K game window")
     s = Sampler(fps_csv)
+    pad = Pad(hwnd)
     for step in [x.strip() for x in steps.split(",") if x.strip()]:
         if step.startswith("wait"):
             s.sleep(int(step.split()[1]))
@@ -158,11 +208,12 @@ def run(steps, fps_csv):
             s.label = step[5:]
         elif step.startswith("hold:"):
             _, b, ms = step.split(":")
-            key(hwnd, b, True); s.sleep(int(ms)); key(hwnd, b, False); time.sleep(0.1)
+            names = b.split("+")
+            pad.set(names); s.sleep(int(ms)); pad.release(names); time.sleep(0.1)
         else:
             b, _, n = step.partition("*")
             for _ in range(int(n or 1)):
-                key(hwnd, b, True); time.sleep(0.1); key(hwnd, b, False); time.sleep(0.3)
+                pad.set([b]); time.sleep(0.1); pad.release([b]); time.sleep(0.3)
 
 
 def main():
@@ -176,7 +227,8 @@ def main():
         text = open(cfg, encoding="utf-8").read()
         open(cfg, "w", encoding="utf-8").write(
             re.sub(r"^backend-renderer: .*$", f"backend-renderer: {backend}", text, flags=re.M))
-        subprocess.Popen([exe, "-B", backend, "-r", sys.argv[3]], cwd=root,
+        env = dict(os.environ, VITA3K_INPUT_PIPE="v3kdrive")
+        subprocess.Popen([exe, "-B", backend, "-r", sys.argv[3]], cwd=root, env=env,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         t0 = time.time()
         while time.time() - t0 < 60:
