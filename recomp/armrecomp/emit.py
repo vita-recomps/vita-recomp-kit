@@ -12,6 +12,8 @@ from . import semantics
 
 ALL_FLAGS = frozenset('nzcv')
 FALLS_THROUGH = {'seq', 'nop', 'it', 'call', 'call_import', 'call_indirect', 'cond_branch'}
+# kinds after which the next instruction starts a basic block (calls return into the same block)
+ENDS_BLOCK = {'branch', 'cond_branch', 'jumptable', 'return', 'jump_indirect', 'trap', 'unsupported'}
 
 
 def fname(addr):
@@ -29,7 +31,8 @@ class FunctionEmitter:
         f = self.f
         self.tr = []
         for ins in f.instructions:
-            self.tr.append(semantics.translate(ins, f.thumb, self.imports, f.start, f.end, f.jumptables))
+            self.tr.append(semantics.translate(ins, f.thumb, self.imports, f.start, f.end, f.jumptables,
+                                               self.module.patched))
         self.addr_index = {ins.address: i for i, ins in enumerate(f.instructions)}
         return self.tr
 
@@ -102,12 +105,18 @@ class FunctionEmitter:
             following = insns[i + 1].address if i + 1 < len(insns) else None
             if self.falls_through(ins, t) and nxt in self.addr_index and nxt != following:
                 labels.add(nxt)
+        # basic blocks, for the executed-instruction counter (RECOMP_COUNT)
+        starts = [i for i, (ins, t) in enumerate(zip(insns, tr))
+                  if i == 0 or ins.address in labels or tr[i - 1].kind in ENDS_BLOCK]
+        block_len = {s: e - s for s, e in zip(starts, starts[1:] + [len(insns)])}
         out = [f'void {fname(f.start)}(GuestContext *ctx) {{']
         stats = {'insns': 0, 'unsupported': 0, 'flags_dropped': 0}
         for i, (ins, t) in enumerate(zip(insns, tr)):
             cs = ins.cs
             if ins.address in labels:
                 out.append(f'L_{ins.address:08x}:;')
+            if i in block_len:
+                out.append(f'    RECOMP_COUNT({block_len[i]});')
             stats['insns'] += 1
             if t.kind == 'unsupported':
                 stats['unsupported'] += 1
@@ -161,7 +170,7 @@ class FunctionEmitter:
                 # bl keeps the mode, blx switches; the callee's own mode decides its entry
                 callee = target & ~1
                 if callee in self.recompiled:
-                    lines.append(f'{fname(callee)}(ctx);')
+                    lines.append(f'RECOMP_CALL({fname(callee)}, 0x{callee | 1:08x}u);')
                 else:
                     mode = self.module_mode(callee, ins)
                     lines.append(f'call_indirect(ctx, 0x{callee | mode:08x}u);')

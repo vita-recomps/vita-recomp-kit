@@ -71,6 +71,7 @@ class Ctx:
         self.addr = ins.address
         self.pc = self.addr + (4 if thumb else 8)
         self.t = Translation()
+        self.patched = False
 
     def emit(self, s):
         self.t.stmts.append(s)
@@ -249,7 +250,16 @@ def dp_wide_imm(cx, base):
     d = cx.ridx(ops[0])
     if d == 15:
         raise Unsupported('write to pc')
-    if base == 'movw':
+    if cx.patched:
+        # the loader writes this immediate (a variable import's address): decode it at run time
+        if base not in ('movw', 'movt') or not cx.thumb or cx.ins.size != 4:
+            raise Unsupported(f'loader-patched {base}')
+        imm = f'thumb_mov_imm16(0x{cx.addr:08x}u)'
+        if base == 'movw':
+            cx.emit(f'ctx->r[{d}] = {imm};')
+        else:
+            cx.emit(f'ctx->r[{d}] = (ctx->r[{d}] & 0xffffu) | ({imm} << 16);')
+    elif base == 'movw':
         cx.emit(f'ctx->r[{d}] = 0x{ops[1].imm & 0xffff:04x}u;')
     elif base == 'movt':
         cx.emit(f'ctx->r[{d}] = (ctx->r[{d}] & 0xffffu) | 0x{(ops[1].imm & 0xffff) << 16:08x}u;')
@@ -626,12 +636,11 @@ def exclusive(cx, base):
         fn, ty = {'strex': ('wr32', 'uint32_t'), 'strexb': ('wr8', 'uint8_t'), 'strexh': ('wr16', 'uint16_t')}[base]
         rd, rt = cx.ridx(ops[0]), cx.ridx(ops[1])
         addr, _, _ = mem_address(cx, ops[2])
-        # single-threaded semantics for v0: the store succeeds when the monitor is armed for this
-        # address. Phase 4 maps this to a host compare-and-swap.
+        # the store succeeds when the monitor is armed for this address and memory still holds the
+        # value ldrex read: a host compare-and-swap, as Vita3K's dynarmic does it (value-based)
         cx.emit('{')
         cx.emit(f'const uint32_t addr = {addr};')
-        cx.emit(f'const uint32_t ok = ctx->excl_valid && ctx->excl_addr == addr;')
-        cx.emit(f'if (ok) {fn}(addr, {ty}({cx.r(rt)}));')
+        cx.emit(f'const uint32_t ok = ctx->excl_valid && ctx->excl_addr == addr && cas<{ty}>(addr, {ty}(ctx->excl_value), {ty}({cx.r(rt)}));')
         cx.emit('ctx->excl_valid = 0;')
         cx.emit(f'ctx->r[{rd}] = ok ? 0u : 1u;')
         cx.emit('}')
@@ -650,8 +659,7 @@ def exclusive(cx, base):
         addr, _, _ = mem_address(cx, ops[3])
         cx.emit('{')
         cx.emit(f'const uint32_t addr = {addr};')
-        cx.emit('const uint32_t ok = ctx->excl_valid && ctx->excl_addr == addr;')
-        cx.emit(f'if (ok) wr64(addr, (uint64_t({cx.r(r2)}) << 32) | {cx.r(r1)});')
+        cx.emit(f'const uint32_t ok = ctx->excl_valid && ctx->excl_addr == addr && cas<uint64_t>(addr, ctx->excl_value, (uint64_t({cx.r(r2)}) << 32) | {cx.r(r1)});')
         cx.emit('ctx->excl_valid = 0;')
         cx.emit(f'ctx->r[{rd}] = ok ? 0u : 1u;')
         cx.emit('}')
@@ -921,8 +929,11 @@ def convert(cx, types, ops):
 
 # --- entry point ------------------------------------------------------------------------------
 
-def translate(ins, thumb, imports, func_start, func_end, jumptables):
+def translate(ins, thumb, imports, func_start, func_end, jumptables, patched=frozenset()):
+    """patched: addresses of instructions the loader rewrites (variable imports); their
+    immediates are read from guest memory at run time"""
     cx = Ctx(ins, thumb)
+    cx.patched = ins.address in patched
     t = cx.t
     cs = cx.cs
     m = ins.mnemonic
@@ -944,7 +955,10 @@ def translate(ins, thumb, imports, func_start, func_end, jumptables):
     try:
         if m.startswith('it') and len(m) <= 4 and set(m[1:]) <= {'t', 'e'}:
             t.kind = 'it'
-        elif m in ('nop', 'yield', 'dmb', 'dsb', 'isb', 'pld', 'pli', 'sev', 'wfe', 'wfi'):
+        elif m in ('dmb', 'dsb'):
+            # other threads (native or on the JIT) see memory in program order around barriers
+            cx.emit('std::atomic_thread_fence(std::memory_order_seq_cst);')
+        elif m in ('nop', 'yield', 'isb', 'pld', 'pli', 'sev', 'wfe', 'wfi'):
             t.kind = 'nop'
         elif m in ('udf', 'bkpt'):
             t.kind = 'trap' if m == 'udf' else 'nop'

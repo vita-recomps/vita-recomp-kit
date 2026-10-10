@@ -68,6 +68,8 @@ class VitaElf:
     extab_range: tuple = (0, 0)
     module_info_va: int = 0
     imports: list = field(default_factory=list)
+    # instructions/words the loader patches for variable imports: (address, ELF reloc code, nid)
+    var_import_sites: list = field(default_factory=list)
     exports: list = field(default_factory=list)  # (library, nid, address, name)
 
     def v2o(self, va):
@@ -187,6 +189,23 @@ def exception_scopes(elf):
     return scopes
 
 
+def var_import_relocs(elf, table, nid):
+    """Sites a variable import's reference table patches (Vita3K kernel/src/relocation.cpp, formats
+    1 and 2 in their variable-import layout): [(address, reloc code, nid)]. The table starts with a
+    header word whose bits 4-27 hold its size in bytes, header included."""
+    size = (elf.u32(table) >> 4) & 0xffffff
+    out = []
+    va, end = table + 4, table + size
+    while va < end:
+        w = elf.u32(va)
+        fmt, seg, code = w & 0xf, (w >> 4) & 0xf, (w >> 8) & 0xff
+        if fmt not in (1, 2):
+            raise ValueError(f'variable import {nid:#010x}: relocation format {fmt} at {va:#x}')
+        out.append((elf.segments[seg].vaddr + elf.u32(va + 4), code, nid))
+        va += 8 if fmt == 1 else 12
+    return out
+
+
 def load(path, nid_db=None):
     d = open(path, 'rb').read()
     e_type = struct.unpack_from('<H', d, 16)[0]
@@ -225,6 +244,8 @@ def load(path, nid_db=None):
         for k in range(nf):
             nid = elf.u32(fnt + 4 * k)
             elf.imports.append(Import(elf.u32(fet + 4 * k), lib, lnid, nid, func_names.get(nid, '')))
+        for k in range(nv):
+            elf.var_import_sites += var_import_relocs(elf, elf.u32(vet + 4 * k), elf.u32(vnt + 4 * k))
         o += size
 
     o, end = s0.offset + exp_top, s0.offset + exp_end

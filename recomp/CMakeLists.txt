@@ -1,7 +1,7 @@
 # Builds the recompiled modules (generated/<module>/ from recomp/recompile.py) into static libraries,
 # and the dynarmic comparison tests (recomp/tests). See docs/decisions.md D6.
 #   cmake -S recomp -B build/recomp -G Ninja -DCMAKE_BUILD_TYPE=Release
-#   cmake --build build/recomp
+#   cmake --build build/recomp      # gen_<module>.lib and ssd_aot_<module>.dll
 cmake_minimum_required(VERSION 3.20)
 project(armrecomp CXX)
 
@@ -14,6 +14,11 @@ set(RECOMP_MODULES "eboot;libc;libfios2;libult" CACHE STRING "modules to build")
 # generated buckets are big: limit parallel compiles to what the RAM allows
 set(RECOMP_JOBS 4 CACHE STRING "parallel compiles of generated code")
 set_property(GLOBAL APPEND PROPERTY JOB_POOLS recomp_pool=${RECOMP_JOBS})
+# count the guest instructions native code runs (GuestContext::insns), for the fork's counters
+option(RECOMP_COUNT_INSNS "count executed guest instructions in generated code" ON)
+# route direct calls between recompiled functions through the host (debugging: SSD_AOT_RANGE then
+# selects every native function, not only JIT entry points)
+option(RECOMP_BISECT "direct calls go through call_indirect" OFF)
 
 foreach(module IN LISTS RECOMP_MODULES)
     file(GLOB srcs CONFIGURE_DEPENDS "${GENERATED_DIR}/${module}/*.cpp")
@@ -28,6 +33,16 @@ foreach(module IN LISTS RECOMP_MODULES)
         # huge functions: /bigobj; keep optimisation moderate (compile time and memory)
         target_compile_options(gen_${module} PRIVATE /bigobj /O1 /w)
     endif()
+    if(RECOMP_COUNT_INSNS)
+        target_compile_definitions(gen_${module} PRIVATE RECOMP_COUNT_INSNS)
+    endif()
+    if(RECOMP_BISECT)
+        target_compile_definitions(gen_${module} PRIVATE RECOMP_BISECT)
+    endif()
+    # the module as a DLL the Vita3K fork loads (SSD_AOT, docs/decisions.md D7)
+    add_library(ssd_aot_${module} SHARED runtime/aot_dll.cpp)
+    target_include_directories(ssd_aot_${module} PRIVATE runtime)
+    target_link_libraries(ssd_aot_${module} PRIVATE gen_${module})
 endforeach()
 
 # --- per-instruction comparison tests against dynarmic ------------------------------------------

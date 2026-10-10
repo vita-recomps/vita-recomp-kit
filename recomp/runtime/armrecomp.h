@@ -6,6 +6,9 @@
 // declared at the end.
 #pragma once
 
+#include "aot_abi.h"
+
+#include <atomic>
 #include <climits>
 #include <cmath>
 #include <cstdint>
@@ -13,25 +16,7 @@
 
 namespace armrecomp {
 
-struct GuestContext {
-    uint32_t r[16]; // r15 holds the address of the last branch target written by generated code
-    // flags as 0/1 values; generated code reads and writes them directly
-    uint32_t n, z, c, v, q;
-    uint32_t ge; // GE[3:0]
-    union {
-        uint64_t d[32];
-        uint32_t s[64];
-        float f[64];
-        double fd[32];
-    } vfp;
-    uint32_t fpscr; // NZCV live in fpscr_nzcv until read through vmrs
-    uint32_t tpidruro; // user read-only thread ID register (TLS), read by mrc p15, 0, rd, c13, c0, 3
-    // exclusive monitor
-    uint32_t excl_addr;
-    uint32_t excl_valid;
-    uint64_t excl_value;
-    void *embedder; // opaque pointer for the embedder
-};
+// GuestContext is defined in aot_abi.h
 
 // --- hooks provided by the embedder -------------------------------------------------------------
 
@@ -59,26 +44,24 @@ void call_import(GuestContext *ctx, uint32_t stub_addr);
 // --- memory --------------------------------------------------------------------------------------
 
 #ifndef RECOMP_CUSTOM_MEMORY
-inline uint8_t rd8(uint32_t a) { return g_guest_base[a]; }
-inline uint16_t rd16(uint32_t a) {
-    uint16_t v;
-    std::memcpy(&v, g_guest_base + a, 2);
-    return v;
+// volatile: other guest threads change memory concurrently, so the compiler must neither cache
+// loads (a spin-wait would never end) nor drop or merge stores; plain mov instructions on x64
+template <typename T>
+inline T rdv(uint32_t a) {
+    return *reinterpret_cast<const volatile T *>(g_guest_base + a);
 }
-inline uint32_t rd32(uint32_t a) {
-    uint32_t v;
-    std::memcpy(&v, g_guest_base + a, 4);
-    return v;
+template <typename T>
+inline void wrv(uint32_t a, T v) {
+    *reinterpret_cast<volatile T *>(g_guest_base + a) = v;
 }
-inline uint64_t rd64(uint32_t a) {
-    uint64_t v;
-    std::memcpy(&v, g_guest_base + a, 8);
-    return v;
-}
-inline void wr8(uint32_t a, uint8_t v) { g_guest_base[a] = v; }
-inline void wr16(uint32_t a, uint16_t v) { std::memcpy(g_guest_base + a, &v, 2); }
-inline void wr32(uint32_t a, uint32_t v) { std::memcpy(g_guest_base + a, &v, 4); }
-inline void wr64(uint32_t a, uint64_t v) { std::memcpy(g_guest_base + a, &v, 8); }
+inline uint8_t rd8(uint32_t a) { return rdv<uint8_t>(a); }
+inline uint16_t rd16(uint32_t a) { return rdv<uint16_t>(a); }
+inline uint32_t rd32(uint32_t a) { return rdv<uint32_t>(a); }
+inline uint64_t rd64(uint32_t a) { return rdv<uint64_t>(a); }
+inline void wr8(uint32_t a, uint8_t v) { wrv(a, v); }
+inline void wr16(uint32_t a, uint16_t v) { wrv(a, v); }
+inline void wr32(uint32_t a, uint32_t v) { wrv(a, v); }
+inline void wr64(uint32_t a, uint64_t v) { wrv(a, v); }
 #else
 uint8_t rd8(uint32_t a);
 uint16_t rd16(uint32_t a);
@@ -90,7 +73,54 @@ void wr32(uint32_t a, uint32_t v);
 void wr64(uint32_t a, uint64_t v);
 #endif
 
+// compare-and-swap of guest memory: strex/strexd succeed only if memory still holds the value
+// their ldrex read (aligned, as ARM requires for exclusives)
+#ifndef RECOMP_CUSTOM_MEMORY
+template <typename T>
+inline bool cas(uint32_t a, T expected, T desired) {
+    return std::atomic_ref<T>(*reinterpret_cast<T *>(g_guest_base + a)).compare_exchange_strong(expected, desired);
+}
+#else
+template <typename T>
+inline bool cas(uint32_t a, T expected, T desired) {
+    T cur;
+    if constexpr (sizeof(T) == 1) cur = rd8(a);
+    else if constexpr (sizeof(T) == 2) cur = rd16(a);
+    else if constexpr (sizeof(T) == 4) cur = rd32(a);
+    else cur = rd64(a);
+    if (cur != expected)
+        return false;
+    if constexpr (sizeof(T) == 1) wr8(a, desired);
+    else if constexpr (sizeof(T) == 2) wr16(a, desired);
+    else if constexpr (sizeof(T) == 4) wr32(a, desired);
+    else wr64(a, desired);
+    return true;
+}
+#endif
+
 // --- helpers used by generated code -------------------------------------------------------------
+
+// a direct call to another recompiled function; RECOMP_BISECT builds route it through the host,
+// which then decides per function whether native code or the JIT runs it (SSD_AOT_RANGE)
+#ifdef RECOMP_BISECT
+#define RECOMP_CALL(fn, addr) call_indirect(ctx, addr)
+#else
+#define RECOMP_CALL(fn, addr) fn(ctx)
+#endif
+
+// executed-instruction counter: every basic block adds its length (the Vita3K fork's counters)
+#ifdef RECOMP_COUNT_INSNS
+#define RECOMP_COUNT(n) (ctx->insns += (n))
+#else
+#define RECOMP_COUNT(n) ((void)0)
+#endif
+
+// imm16 of the Thumb-2 movw/movt at addr, read from guest memory: the loader patches the ones that
+// load a variable import's address
+inline uint32_t thumb_mov_imm16(uint32_t addr) {
+    const uint32_t hw1 = rd16(addr), hw2 = rd16(addr + 2);
+    return (hw1 & 0xf) << 12 | ((hw1 >> 10) & 1) << 11 | ((hw2 >> 12) & 7) << 8 | (hw2 & 0xff);
+}
 
 inline uint32_t bswap32(uint32_t x) {
     return (x >> 24) | ((x >> 8) & 0xff00u) | ((x << 8) & 0xff0000u) | (x << 24);

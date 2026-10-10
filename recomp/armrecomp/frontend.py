@@ -51,6 +51,8 @@ class Module:
             md.detail = True
             self.md[thumb] = md
         self.imports = {i.stub: i for i in self.elf.imports}
+        # instructions the loader patches for variable imports
+        self.patched = frozenset(a for a, _, _ in self.elf.var_import_sites)
         tables = {}
         for t in self.inv.jumptables:
             tables[int(t['site'], 16)] = [int(x, 16) for x in t['targets'].split()]
