@@ -249,7 +249,7 @@ def float_op(cx, base, ops):
         return
     if base in ('vrecpe', 'vrsqrte') and len(rs) == 2:
         f = 'FRecpe' if base == 'vrecpe' else 'FRsqrte'
-        emit(f'map1<uint32_t, uint32_t, {n_lanes}>(ctx, {d}, {rs[1][0]}, {f}{{}});')
+        emit(f'map1<uint32_t, uint32_t, {n_lanes}>(ctx, {d}, {rs[1][0]}, {f}{{ctx}});')
         return
     if base in ('vpadd', 'vpmax', 'vpmin') and len(rs) == 3:
         f = {'vpadd': 'FAdd', 'vpmax': 'FMax', 'vpmin': 'FMin'}[base]

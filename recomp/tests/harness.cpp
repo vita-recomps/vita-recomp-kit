@@ -206,7 +206,9 @@ static void compare(const GuestContext &ctx, Dynarmic::A32::Jit &jit, const Test
             break;
         }
     }
-    // compare FPSCR NZCV and control bits; cumulative exception flags (bits 0-7) are not tracked natively
+    // compare FPSCR NZCV and control bits. Not the cumulative exception flags (bits 0-7): native
+    // code sets only DZC, and dynarmic derives them from the host's MXCSR, so they also reflect how
+    // it implements an instruction on x64
     if ((ctx.fpscr & 0xffffff00u) != (jit.Fpscr() & 0xffffff00u)) {
         std::snprintf(buf, sizeof(buf), "fpscr native %08x dynarmic %08x; ", ctx.fpscr, jit.Fpscr());
         diff += buf;

@@ -209,6 +209,15 @@ template <typename T> inline T fp_add(T a, T b) { return process_nans(T(a + b), 
 template <typename T> inline T fp_sub(T a, T b) { return process_nans(T(a - b), a, b); }
 template <typename T> inline T fp_mul(T a, T b) { return process_nans(T(a * b), a, b); }
 template <typename T> inline T fp_div(T a, T b) { return process_nans(T(a / b), a, b); }
+// VFP vdiv also sets FPSCR.DZC (cumulative divide-by-zero) for a finite nonzero dividend over
+// zero. The other cumulative flags are not modelled; this one is read back: libc's math raises
+// it with feraiseexcept, as the differential check showed.
+template <typename T>
+inline T fp_div(GuestContext *ctx, T a, T b) {
+    if (b == T(0) && a == a && a != T(0) && a - a == T(0))
+        ctx->fpscr |= 2u;
+    return fp_div(a, b);
+}
 
 // VFP compare result as FPSCR NZCV bits (31..28): less 1000, equal 0110, greater 0010, unordered 0011
 template <typename T>

@@ -516,14 +516,18 @@ inline uint32_t recip_estimate_lut(uint32_t a) { // a in [256, 512): u1.8
     const uint32_t b = (1u << 19) / x;
     return (b + 1) / 2;
 }
+// The estimates of zero (or a flushed denormal) set FPSCR.DZC, like vdiv (fp_div in armrecomp.h)
 struct FRecpe {
+    GuestContext *c;
     uint32_t operator()(uint32_t op, bool &) const {
         const uint32_t sign = op & 0x80000000u;
         const uint32_t exp = (op >> 23) & 0xff, frac = op & 0x7fffff;
         if (exp == 0xff)
             return frac ? 0x7fc00000u : sign; // NaN -> default NaN; inf -> 0
-        if (exp == 0)
+        if (exp == 0) {
+            c->fpscr |= 2u;
             return sign | 0x7f800000u; // zero or flushed denormal -> inf
+        }
         const int e = int(exp) - 127;
         if (e >= 126)
             return sign; // the result would be denormal: flushed
@@ -542,13 +546,16 @@ inline uint32_t rsqrt_estimate_lut(uint32_t a) { // a: u0.9 in [128, 512)
     return uint32_t((b + 1) / 2);
 }
 struct FRsqrte {
+    GuestContext *c;
     uint32_t operator()(uint32_t op, bool &) const {
         const uint32_t sign = op & 0x80000000u;
         const uint32_t exp = (op >> 23) & 0xff, frac = op & 0x7fffff;
         if (exp == 0xff && frac)
             return 0x7fc00000u;
-        if (exp == 0)
+        if (exp == 0) {
+            c->fpscr |= 2u;
             return sign | 0x7f800000u;
+        }
         if (sign)
             return 0x7fc00000u;
         if (exp == 0xff)

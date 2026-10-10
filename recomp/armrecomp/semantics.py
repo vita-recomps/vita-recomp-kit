@@ -870,7 +870,7 @@ def vfp(cx, mnemonic):
         three = base not in ('vadd', 'vsub', 'vmul', 'vdiv', 'vnmul')
         A, B, D = 'in0', 'in1', 'in2'
         p = f'fp_mul({A}, {B})'
-        expr = {'vadd': f'fp_add({A}, {B})', 'vsub': f'fp_sub({A}, {B})', 'vmul': p, 'vdiv': f'fp_div({A}, {B})',
+        expr = {'vadd': f'fp_add({A}, {B})', 'vsub': f'fp_sub({A}, {B})', 'vmul': p, 'vdiv': f'fp_div(ctx, {A}, {B})',
                 'vnmul': f'fneg({p})',
                 'vmla': f'fp_add({D}, {p})', 'vmls': f'fp_add({D}, fneg({p}))',
                 'vnmla': f'fp_add(fneg({D}), fneg({p}))', 'vnmls': f'fp_add(fneg({D}), {p})'}.get(base)
