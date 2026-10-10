@@ -32,6 +32,8 @@ from capstone import Cs, CS_ARCH_ARM, CS_MODE_ARM, CS_MODE_THUMB
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import vitaelf  # noqa: E402
 
+INVERSE_COND = {'eq': 'ne', 'ne': 'eq', 'cs': 'cc', 'hs': 'lo', 'cc': 'cs', 'lo': 'hs', 'mi': 'pl', 'pl': 'mi',
+                'vs': 'vc', 'vc': 'vs', 'hi': 'ls', 'ls': 'hi', 'ge': 'lt', 'lt': 'ge', 'gt': 'le', 'le': 'gt'}
 CONDS = {'eq', 'ne', 'cs', 'hs', 'cc', 'lo', 'mi', 'pl', 'vs', 'vc', 'hi', 'ls', 'ge', 'lt', 'gt', 'le', 'al'}
 CORE_REGS = {f'r{i}' for i in range(13)} | {'sb', 'sl', 'fp', 'ip', 'sp', 'lr', 'pc'}
 REG_ALIAS = {'sb': 'r9', 'sl': 'r10', 'fp': 'r11', 'ip': 'r12'}
@@ -77,6 +79,7 @@ class Inventory:
         self.mode_of = {e.start & ~1: bool(e.start & 1) for e in entries}
         self.functions, self.jumptables, self.indirect, self.calls = [], [], [], []
         self.const_refs = collections.defaultdict(set)  # target -> sources (code constants)
+        self.func_insns = {}  # function start -> {instruction address: (size, IT condition or None)}
         # C++ exception landing pads from the EHABI tables. They are only reached by unwinding, so
         # they are extra decode roots of their function.
         self.eh_scopes = vitaelf.exception_scopes(elf)
@@ -133,6 +136,7 @@ class Inventory:
             self.mode_of.update(self.mode_overrides)
             self.functions, self.jumptables, self.indirect, self.calls = [], [], [], []
             self.const_refs.clear()
+            self.func_insns = {}
             self.code_bytes = bytearray(len(self.code))
             self.dead_epilogues = 0
             self.unreached_runs = []
@@ -172,8 +176,10 @@ class Inventory:
         tried_orphans = set()
         if self.landing_pads.get(start):
             flags.add('landing_pads')
+        insns = self.func_insns.setdefault(start, {})
         while work:
-            addr, it_left, regs, last_cmp = work.pop()
+            addr, it_conds, regs, last_cmp = work.pop()
+            it_conds = tuple(it_conds) if it_conds else ()
             after_call = False  # only nops since the last direct call on this path
             while True:
                 if addr in seen:
@@ -201,9 +207,11 @@ class Inventory:
                 if m != 'nop':
                     after_call = False
                 pc = a + (4 if thumb else 8)
-                conditional = it_left > 0
-                if it_left:
-                    it_left -= 1
+                # IT block: this instruction's condition, if any (then = the IT condition, else = inverse)
+                it_cond = it_conds[0] if it_conds else None
+                conditional = it_cond is not None
+                it_conds = it_conds[1:]
+                insns[a] = (size, it_cond)
                 nxt = a + size
 
                 if m.startswith('v'):
@@ -213,7 +221,8 @@ class Inventory:
                 if m in ('push', 'stmdb', 'stmfd') and 'lr' in ops:
                     pushed_lr = True
                 if m.startswith('it') and len(m) <= 4 and set(m[1:]) <= {'t', 'e'}:
-                    it_left = len(m) - 1
+                    first = ops.strip()
+                    it_conds = tuple(first if ch == 't' else INVERSE_COND[first] for ch in 't' + m[2:])
                     addr = nxt
                     continue
 
@@ -294,7 +303,7 @@ class Inventory:
                             addr = nxt
                             continue
                         addr = target
-                        it_left = 0
+                        it_conds = ()
                         continue
                     kind = self.classify_target(target | (1 if thumb else 0))
                     c['tail_calls'] += 1
