@@ -278,14 +278,25 @@ def shift_insn(cx, base, s):
     """lsl/lsr/asr/ror with an immediate or a register amount"""
     ops = cx.cs.operands
     d = cx.ridx(ops[0])
-    if len(ops) == 2:
+    reg_amount = None
+    if len(ops) == 2 and ops[1].shift.type != arm.ARM_SFT_INVALID:
+        # ARM: lsl rd, rm, #n / rs is a mov with a shifted operand; the shift is on rm
+        src, sh = ops[1], ops[1].shift
+        if sh.type in (arm.ARM_SFT_ASR, arm.ARM_SFT_LSL, arm.ARM_SFT_LSR, arm.ARM_SFT_ROR):
+            amt = type('Imm', (), {'type': arm.ARM_OP_IMM, 'imm': sh.value})()
+        elif sh.type in (arm.ARM_SFT_ASR_REG, arm.ARM_SFT_LSL_REG, arm.ARM_SFT_LSR_REG, arm.ARM_SFT_ROR_REG):
+            amt = None
+            reg_amount = reg_index(cx.cs, sh.value)
+        else:
+            raise Unsupported('rrx shift')
+    elif len(ops) == 2:
         src, amt = ops[0], ops[1]
     else:
         src, amt = ops[1], ops[2]
     x = cx.r(src)
     cx.emit('{')
     cx.emit(f'const uint32_t x = {x};')
-    if amt.type == arm.ARM_OP_IMM:
+    if amt is not None and amt.type == arm.ARM_OP_IMM:
         n = amt.imm
         if base == 'lsl':
             res, carry = (('x', None) if n == 0 else (f'x << {n}', f'(x >> {32 - n}) & 1u'))
@@ -303,7 +314,7 @@ def shift_insn(cx, base, s):
             if carry is not None:
                 cx.set_flag('c', carry)
     else:
-        cx.emit(f'const uint32_t sh = {cx.r(amt)} & 0xffu;')
+        cx.emit(f'const uint32_t sh = {cx.r(reg_amount if reg_amount is not None else amt)} & 0xffu;')
         if base == 'lsl':
             cx.emit('const uint32_t res = sh >= 32 ? 0u : x << sh;')
             carry = 'sh == 0 ? ctx->c : (sh <= 32 ? (x >> (32 - sh)) & 1u : 0u)'
@@ -480,8 +491,9 @@ def mem_address(cx, mop, post_imm=None):
     else:
         d = m.disp
         off = f'- 0x{-d:x}u' if d < 0 else (f'+ 0x{d:x}u' if d else '')
-    if cx.cs.post_index:
-        # [rn], #imm / [rn], rm: access at rn, then rn += offset
+    if cx.cs.post_index or post_imm is not None:
+        # [rn], #imm / [rn], rm: access at rn, then rn += offset (an operand after the memory
+        # operand always means post-indexing; Capstone's post_index flag is not set in ARM mode)
         if post_imm is None:
             raise Unsupported('post-index form')
         return b, base, post_imm(b)
@@ -692,7 +704,7 @@ def fexpr(kind, n):
 
 def vfp(cx, mnemonic):
     cs = cx.cs
-    parts = cs.mnemonic.split('.')
+    parts = cx.ins.full.split('.')
     base = parts[0]
     types = parts[1:]
     ops = cs.operands

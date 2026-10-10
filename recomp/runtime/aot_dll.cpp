@@ -12,6 +12,8 @@ extern const uint64_t g_code_hash;
 extern const char g_module_name[];
 extern const uint32_t g_patched[];
 extern const uint32_t g_patched_count;
+extern const AotResume g_resumes[];
+extern const uint32_t g_resume_count;
 
 uint8_t *g_guest_base = nullptr;
 
@@ -37,6 +39,6 @@ extern "C" __declspec(dllexport) const armrecomp::AotModule *armrecomp_aot_init(
     g_host = *host;
     g_guest_base = host->guest_base;
     static const AotModule module{AOT_ABI_VERSION, sizeof(GuestContext), g_module_name, g_functions, g_function_count,
-                                  g_code_hash, g_patched, g_patched_count};
+                                  g_code_hash, g_patched, g_patched_count, g_resumes, g_resume_count};
     return &module;
 }

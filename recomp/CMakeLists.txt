@@ -55,7 +55,7 @@ set(VITA3K_CONFIG "RelWithDebInfo" CACHE STRING "")
 set(test_dir "${GENERATED_DIR}/tests/${RECOMP_TEST_MODULE}")
 if(RECOMP_TESTS AND EXISTS "${test_dir}/tests.cpp")
     add_executable(recomp_tests tests/harness.cpp "${test_dir}/tests.cpp" "${test_dir}/functions.cpp")
-    target_compile_definitions(recomp_tests PRIVATE RECOMP_CUSTOM_MEMORY)
+    target_compile_definitions(recomp_tests PRIVATE RECOMP_CUSTOM_MEMORY RECOMP_TEST_BUDGET)
     target_include_directories(recomp_tests PRIVATE runtime tests
         "${VITA3K_SRC}/external/dynarmic/src"
         "${VITA3K_SRC}/external/dynarmic/externals/mcl/include"

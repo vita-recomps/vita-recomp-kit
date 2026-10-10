@@ -26,7 +26,7 @@ NEON_ONLY = {'vdup', 'vbif', 'vbit', 'vbsl', 'vext', 'vrev64', 'vrev32', 'vrev16
              'vqmovn', 'vqmovun', 'vmovl', 'vaddw', 'vsubw', 'vaddl', 'vsubl', 'vshrn', 'vqshrn', 'vqshrun',
              'vrshrn', 'vshr', 'vsra', 'vshl', 'vqadd', 'vqsub', 'vqabs', 'vqneg', 'vtst', 'vceq', 'vcge',
              'vcgt', 'vcle', 'vclt', 'vacgt', 'vacge', 'vrecpe', 'vrecps', 'vrsqrte', 'vrsqrts', 'vmax',
-             'vmin', 'vswp'}
+             'vmin', 'vswp', 'vcnt', 'vclz', 'vpaddl', 'vsli', 'vsri'}
 
 
 class Unsupported(Exception):
@@ -36,7 +36,7 @@ class Unsupported(Exception):
 def is_neon(cx):
     """True for Advanced SIMD instructions (as opposed to VFP ones the scalar code handles)."""
     cs = cx.cs
-    parts = cs.mnemonic.split('.')
+    parts = cx.ins.full.split('.')
     base, types = parts[0], parts[1:]
     names = [cs.reg_name(o.reg) for o in cs.operands if o.type == arm.ARM_OP_REG]
     if any(n.startswith('q') for n in names):
@@ -48,7 +48,7 @@ def is_neon(cx):
     if base in ('vmov', 'vmvn') and types and types[0] in ('i8', 'i16', 'i32', 'i64'):
         return True  # immediate forms on d registers
     if types and (types[0] == 'f32' or types[0] in INT) and names and all(n.startswith('d') for n in names) \
-            and base not in ('vmov', 'vldr', 'vstr', 'vsli', 'vsri', 'vcvtb', 'vcvtt') and 'f64' not in types:
+            and base not in ('vmov', 'vldr', 'vstr', 'vcvtb', 'vcvtt') and 'f64' not in types:
         return True  # f32 / integer arithmetic on d registers is the 2-lane (or 8-byte) SIMD form
     return False
 
@@ -79,7 +79,7 @@ def ctype(t):
 
 def translate(cx):
     cs = cx.cs
-    parts = cs.mnemonic.split('.')
+    parts = cx.ins.full.split('.')
     base, types = parts[0], parts[1:]
     ops = cs.operands
     emit = cx.emit
@@ -110,12 +110,16 @@ def translate(cx):
                 val = ~val & ((1 << (8 * SIZE[t])) - 1)
             elif t0 == 'i64':
                 # each bit of the encoded imm8 (i:imm3:imm4) is a whole byte; Capstone's value is
-                # ambiguous, so decode the instruction
-                if not cx.thumb or cx.ins.size != 4:
-                    raise Unsupported('vmov.i64 immediate outside Thumb-2')
+                # ambiguous, so decode the instruction. i is bit 28 of the Thumb-2 word (the
+                # halfwords in order), bit 24 of the ARM one.
                 b = bytes(cs.bytes)
-                word = (b[0] | b[1] << 8) << 16 | (b[2] | b[3] << 8)
-                imm8 = (word >> 28 & 1) << 7 | (word >> 16 & 7) << 4 | (word & 0xf)
+                if cx.thumb:
+                    word = (b[0] | b[1] << 8) << 16 | (b[2] | b[3] << 8)
+                    i_bit = word >> 28 & 1
+                else:
+                    word = int.from_bytes(b, 'little')
+                    i_bit = word >> 24 & 1
+                imm8 = i_bit << 7 | (word >> 16 & 7) << 4 | (word & 0xf)
                 val = sum(0xff << (8 * k) for k in range(8) if imm8 >> k & 1)
         emit(f'vdup<{t}, {lanes(t, nb)}>(ctx, {d}, {t}(0x{val:x}ull));')
         return
@@ -140,6 +144,11 @@ def translate(cx):
             emit(f'vdup<{t}, {lanes(t, nb)}>(ctx, {d}, vlane<{t}>(ctx, {m}, {lane}));')
         else:
             emit(f'vdup<{t}, {lanes(t, nb)}>(ctx, {d}, {t}({cx.r(src)}));')
+        return
+
+    if base == 'vswp':
+        (d, nb, _), (m, _, _) = regs()
+        emit(f'vswp<{nb // 8}>(ctx, {d}, {m});')
         return
 
     # --- permutations ---
@@ -297,6 +306,17 @@ def int_op(cx, base, types, ops):
     if base == 'vpadd' or base in ('vpmax', 'vpmin'):
         f = {'vpadd': 'IAdd', 'vpmax': 'IMax', 'vpmin': 'IMin'}[base]
         emit(f'pairwise<{t}, {n}>(ctx, {d}, {rs[1][0]}, {rs[2][0]}, {f}{{}});')
+        return
+    if base in ('vcnt', 'vclz') and len(rs) == 2:
+        emit(f'map1<{t}, {t}, {n}>(ctx, {d}, {rs[1][0]}, {"ICnt" if base == "vcnt" else "IClz"}{{}});')
+        return
+    if base == 'vpaddl' and len(rs) == 2:
+        tw = WIDER[t]
+        emit(f'paddl<{t}, {tw}, {nb // SIZE[tw]}>(ctx, {d}, {rs[1][0]});')
+        return
+    if base in ('vsli', 'vsri') and imm is not None:
+        f = 'ISliImm' if base == 'vsli' else 'ISriImm'
+        emit(f'map3<{t}, {n}>(ctx, {d}, {rs[1][0]}, {rs[1][0]}, {f}{{{imm}u}});')
         return
     if base == 'vshr' and imm is not None:
         emit(f'map1<{t}, {t}, {n}>(ctx, {d}, {rs[1][0]}, IShrImm{{{imm}u}});')

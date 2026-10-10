@@ -7,6 +7,11 @@ Flag writes that no path reads are dropped (backward liveness over the instructi
 Return protocol: a function sets ctx->r[15] to the address it returns to (lr for `bx lr`, the
 popped value for `pop {.., pc}`) and returns. Every call site checks that ctx->r[15] is its own
 return address and escapes to the fallback CPU otherwise.
+
+Resume points: the return address of every call outside an IT block is also an entry. With
+ctx->resume set to it, the function starts there (all guest state is in ctx between instructions),
+so a frame the fallback CPU took over after an escape (a fiber switch) runs natively again once its
+callee returns.
 """
 from . import semantics
 
@@ -71,6 +76,9 @@ class FunctionEmitter:
             out = frozenset().union(*[live_in[j] for j in succ[i]]) if succ[i] else frozenset()
             if t.kind in ('jump_indirect', 'unsupported', 'trap'):
                 out = ALL_FLAGS  # the fallback CPU continues with the flags in ctx
+            elif (t.kind in ('branch', 'cond_branch') and t.target not in self.addr_index
+                  and not self.tail_call(t.target)):
+                out = out | ALL_FLAGS  # an escape, as above
             live_out[i] = out
             if t.kind in ('call', 'call_import', 'call_indirect') and ins.it_cond is None:
                 inn = frozenset()  # AAPCS: flags are not preserved across calls
@@ -105,12 +113,29 @@ class FunctionEmitter:
             following = insns[i + 1].address if i + 1 < len(insns) else None
             if self.falls_through(ins, t) and nxt in self.addr_index and nxt != following:
                 labels.add(nxt)
+        # resume points (module docstring): they start basic blocks
+        resumes = []
+        for i, (ins, t) in enumerate(zip(insns, tr)):
+            nxt = ins.address + ins.size
+            if (t.kind in ('call', 'call_import', 'call_indirect') and ins.it_cond is None
+                    and nxt in self.addr_index and insns[self.addr_index[nxt]].it_cond is None):
+                resumes.append(nxt)
+                labels.add(nxt)
         # basic blocks, for the executed-instruction counter (RECOMP_COUNT)
         starts = [i for i, (ins, t) in enumerate(zip(insns, tr))
                   if i == 0 or ins.address in labels or tr[i - 1].kind in ENDS_BLOCK]
         block_len = {s: e - s for s, e in zip(starts, starts[1:] + [len(insns)])}
         out = [f'void {fname(f.start)}(GuestContext *ctx) {{']
-        stats = {'insns': 0, 'unsupported': 0, 'flags_dropped': 0}
+        if resumes:
+            out.append('    if (ctx->resume) {')
+            out.append('        const uint32_t at = ctx->resume;')
+            out.append('        ctx->resume = 0;')
+            out.append('        switch (at) {')
+            out += [f'        case 0x{a:08x}u: goto L_{a:08x};' for a in resumes]
+            out.append('        default: unsupported(ctx, at);')
+            out.append('        }')
+            out.append('    }')
+        stats = {'insns': 0, 'unsupported': 0, 'flags_dropped': 0, 'resumes': resumes}
         for i, (ins, t) in enumerate(zip(insns, tr)):
             cs = ins.cs
             if ins.address in labels:
@@ -158,10 +183,17 @@ class FunctionEmitter:
         if k == 'branch':
             if t.target in self.addr_index:
                 return [f'goto L_{t.target:08x};']
+            if self.tail_call(t.target):
+                return [f'RECOMP_CALL({fname(t.target)}, 0x{t.target | (1 if f.thumb else 0):08x}u);', 'return;']
             return [f'ctx->r[15] = 0x{t.target | (1 if f.thumb else 0):08x}u;', f'escape(ctx, ctx->r[15]);']
         if k == 'cond_branch':
             if t.target in self.addr_index:
                 return [f'if ({t.cond}) goto L_{t.target:08x};']
+            if self.tail_call(t.target):
+                return [f'if ({t.cond}) {{',
+                        f'    RECOMP_CALL({fname(t.target)}, 0x{t.target | (1 if f.thumb else 0):08x}u);',
+                        '    return;',
+                        '}']
             return [f'if ({t.cond}) escape(ctx, 0x{t.target | (1 if f.thumb else 0):08x}u);']
         if k in ('call', 'call_import', 'call_indirect'):
             lines = []
@@ -170,7 +202,7 @@ class FunctionEmitter:
                 # bl keeps the mode, blx switches; the callee's own mode decides its entry
                 callee = target & ~1
                 if callee in self.recompiled:
-                    lines.append(f'RECOMP_CALL({fname(callee)}, 0x{callee | 1:08x}u);')
+                    lines.append(f'RECOMP_CALL({fname(callee)}, 0x{callee | self.module_mode(callee, ins):08x}u);')
                 else:
                     mode = self.module_mode(callee, ins)
                     lines.append(f'call_indirect(ctx, 0x{callee | mode:08x}u);')
@@ -195,6 +227,11 @@ class FunctionEmitter:
         if k == 'trap':
             return [f'unsupported(ctx, 0x{ins.address:08x}u);']
         return []
+
+    def tail_call(self, target):
+        """a branch to another recompiled function's entry in the same mode: the callee returns
+        to this function's caller, with ctx->r[15] set"""
+        return target in self.recompiled and self.module.mode_of(target) in (None, self.f.thumb)
 
     def module_mode(self, callee, ins):
         mode = self.module.mode_of(callee)

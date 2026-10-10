@@ -34,6 +34,7 @@ def main():
         for ins in f.instructions:
             forms[form(ins)] += 1
             mnems[ins.mnemonic] += 1
+        f.release()
     total = sum(mnems.values())
     print(f'{nfun} Thumb non-NEON functions, {total} instructions, {len(mnems)} mnemonics, {len(forms)} forms')
     acc = 0

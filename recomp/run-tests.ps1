@@ -24,8 +24,11 @@ try {
         cmake -S recomp -B $build -G Ninja -DCMAKE_BUILD_TYPE=Release "-DRECOMP_MODULES=" "-DRECOMP_TEST_MODULE=$m" | Out-Null
         cmake --build $build --target recomp_tests | Select-String -Pattern ' error ' | Select-Object -First 5
         $ErrorActionPreference = 'Stop'
-        & "$build\recomp_tests.exe" $Iterations '*' $FunctionIterations | Tee-Object -FilePath "$build\tests.txt" | Select-Object -Last 12
-        if ($LASTEXITCODE) { $failed += $m }
+        # under a memory and time ceiling: a runaway native test once hung the machine
+        & "$PSScriptRoot\tests\guarded-run.ps1" "$build\recomp_tests.exe" "$build\tests.txt" -Rest $Iterations, '*', $FunctionIterations
+        $code = $LASTEXITCODE
+        Get-Content "$build\tests.txt" | Select-Object -Last 12
+        if ($code) { $failed += $m }
     }
     if ($failed) { Write-Host "failing: $($failed -join ', ')"; exit 1 }
     Write-Host 'all modules pass'

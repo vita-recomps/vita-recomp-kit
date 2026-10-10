@@ -15,6 +15,7 @@ struct TestCase {
     void (*fn)(GuestContext *);
     const char *text;
     const char *form;
+    uint8_t thumb; // 0: ARM (the condition is in the instruction, no IT prefix)
 };
 
 extern const TestCase g_tests[];
@@ -27,6 +28,7 @@ struct FunctionTest {
     const uint8_t *code;
     void (*fn)(GuestContext *);
     uint32_t instructions;
+    uint8_t thumb;
 };
 
 extern const FunctionTest g_function_tests[];

@@ -8,7 +8,7 @@
 
 namespace armrecomp {
 
-constexpr uint32_t AOT_ABI_VERSION = 1;
+constexpr uint32_t AOT_ABI_VERSION = 2;
 
 struct GuestContext {
     uint32_t r[16]; // r15 holds the address of the last branch target written by generated code
@@ -29,6 +29,10 @@ struct GuestContext {
     uint64_t excl_value;
     void *embedder; // opaque pointer for the embedder
     uint64_t insns; // guest instructions run natively, counted by modules built with RECOMP_COUNT_INSNS
+    // nonzero: the next function called starts at this resume point (AotResume) instead of its
+    // entry, and clears it
+    uint32_t resume;
+    uint32_t reserved;
 };
 
 // Provided by the runtime. The hooks have the semantics documented in armrecomp.h; escape and
@@ -49,6 +53,13 @@ struct AotFunction {
     void (*fn)(GuestContext *ctx);
 };
 
+// A call's return address inside a function, where the function can also start (ctx->resume)
+struct AotResume {
+    uint32_t addr; // bit 0 set for Thumb
+    uint32_t function; // entry address of the function, bit 0 set for Thumb
+    void (*fn)(GuestContext *ctx);
+};
+
 // Provided by the module.
 struct AotModule {
     uint32_t abi_version;
@@ -64,6 +75,8 @@ struct AotModule {
     // immediates from guest memory
     const uint32_t *patched;
     uint32_t patched_count;
+    const AotResume *resumes; // sorted by address
+    uint32_t resume_count;
 };
 
 // The module DLL exports `extern "C" const AotModule *armrecomp_aot_init(const AotHost *)`. It

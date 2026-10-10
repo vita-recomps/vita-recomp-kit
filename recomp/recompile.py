@@ -8,7 +8,8 @@ usage: python -I recomp/recompile.py <elf> <out dir> [--load-base HEX] [--bucket
 Writes to <out dir> (under generated/, never committed):
   funcs.h          prototypes of every recompiled function
   bucket_NNN.cpp   the functions, about --bucket-bytes of guest code per file (default 64 KiB)
-  table.cpp        sorted address -> function table, module name and code hash (aot_abi.h)
+  table.cpp        sorted address -> function table, resume points, module name and code hash
+                   (aot_abi.h)
   report.txt       coverage: recompiled / left to the fallback CPU, unsupported instructions
 """
 import bisect, collections, glob, io, os, sys, time
@@ -28,10 +29,10 @@ namespace armrecomp {{
 
 
 def translatable(f, mod):
-    """every instruction of f has a translation (NEON included)"""
-    if not f.uses_neon:
-        return True  # integer/VFP code always translates (report.txt counts any exception)
-    return all(semantics.translate(ins, True, mod.imports, f.start, f.end, f.jumptables, mod.patched).kind != 'unsupported'
+    """every instruction of f has a translation (NEON and ARM mode included)"""
+    if f.thumb and not f.uses_neon:
+        return True  # Thumb integer/VFP code always translates (report.txt counts any exception)
+    return all(semantics.translate(ins, f.thumb, mod.imports, f.start, f.end, f.jumptables, mod.patched).kind != 'unsupported'
                for ins in f.instructions)
 
 
@@ -75,9 +76,9 @@ def main():
     for f in mod.functions:
         if f.kind != 'code':
             continue
-        if not f.thumb:
-            reasons['arm_mode'] += 1
-        elif not translatable(f, mod):
+        ok = translatable(f, mod)
+        f.release()
+        if not ok:
             reasons['untranslatable'] += 1
         elif only is not None and f.start not in only:
             reasons['not_selected'] += 1
@@ -88,8 +89,11 @@ def main():
     unsupported = collections.Counter()
     totals = collections.Counter()
     buckets, current, size = [], [], 0
+    resumes = []  # (resume address | Thumb, function)
     for f in native:
         text, stats = FunctionEmitter(f, mod, recompiled).emit()
+        f.release()
+        resumes += [(a | (1 if f.thumb else 0), f) for a in stats.pop('resumes')]
         totals.update(stats)
         if stats['unsupported']:
             totals['functions_with_unsupported'] += 1
@@ -140,19 +144,27 @@ def main():
         fh.write(HEADER.format(elf=os.path.basename(elf)))
         fh.write('extern const AotFunction g_functions[] = {\n')
         for f in native:
-            fh.write(f'    {{0x{f.start | 1:08x}u, {f.end - f.start}u, {fname(f.start)}}},\n')
+            fh.write(f'    {{0x{f.start | (1 if f.thumb else 0):08x}u, {f.end - f.start}u, {fname(f.start)}}},\n')
         fh.write('};\n')
         fh.write(f'extern const uint32_t g_function_count = {len(native)};\n')
         fh.write(f'extern const uint64_t g_code_hash = 0x{code_hash:016x}ull;\n')
         fh.write(f'extern const char g_module_name[] = "{os.path.basename(elf)}";\n')
         fh.write('extern const uint32_t g_patched[] = {' + ', '.join(f'0x{a:08x}u' for a in patched or [0]) + '};\n')
         fh.write(f'extern const uint32_t g_patched_count = {len(patched)};\n')
+        fh.write('extern const AotResume g_resumes[] = {\n')
+        for a, f in sorted(resumes, key=lambda r: r[0]):
+            fh.write(f'    {{0x{a:08x}u, 0x{f.start | (1 if f.thumb else 0):08x}u, {fname(f.start)}}},\n')
+        if not resumes:
+            fh.write('    {0, 0, nullptr},\n')
+        fh.write('};\n')
+        fh.write(f'extern const uint32_t g_resume_count = {len(resumes)};\n')
         fh.write('} // namespace armrecomp\n')
 
     lines = [
         f'{os.path.basename(elf)}: {len(native)} functions recompiled, left to the fallback CPU: {dict(reasons)}',
         f'instructions: {totals["insns"]}, unsupported: {totals["unsupported"]} in {totals["functions_with_unsupported"]} functions',
         f'flag writes dropped as dead: {totals["flags_dropped"]}',
+        f'resume points (call return sites): {len(resumes)}',
         f'buckets: {len(buckets)} (about {bucket_bytes} bytes of guest code each)',
         f'code hash: {code_hash:016x}',
         'unsupported by mnemonic: ' + ', '.join(f'{m} {n}' for m, n in unsupported.most_common(40)),

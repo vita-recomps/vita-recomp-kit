@@ -3,7 +3,13 @@ details, as the input of the emitter."""
 import os, sys
 from dataclasses import dataclass, field
 
-from capstone import Cs, CS_ARCH_ARM, CS_MODE_ARM, CS_MODE_THUMB
+from capstone import Cs, CS_ARCH_ARM, CS_MODE_ARM, CS_MODE_THUMB, arm
+
+CC_NAME = {arm.ARM_CC_EQ: 'eq', arm.ARM_CC_NE: 'ne', arm.ARM_CC_HS: 'hs', arm.ARM_CC_LO: 'lo', arm.ARM_CC_MI: 'mi',
+           arm.ARM_CC_PL: 'pl', arm.ARM_CC_VS: 'vs', arm.ARM_CC_VC: 'vc', arm.ARM_CC_HI: 'hi', arm.ARM_CC_LS: 'ls',
+           arm.ARM_CC_GE: 'ge', arm.ARM_CC_LT: 'lt', arm.ARM_CC_GT: 'gt', arm.ARM_CC_LE: 'le'}
+# Capstone spells hs/lo as cs/cc in mnemonics
+CC_SPELLINGS = {'hs': ('hs', 'cs'), 'lo': ('lo', 'cc')}
 
 TOOLS = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'tools')
 sys.path.insert(0, TOOLS)
@@ -15,12 +21,17 @@ import vitaelf  # noqa: E402
 class Instruction:
     address: int
     size: int
-    it_cond: str  # condition from an enclosing IT block, or None
+    it_cond: str  # condition from an enclosing IT block (Thumb) or of the instruction (ARM), or None
     cs: object  # capstone CsInsn with detail
+    full: str = ''  # the mnemonic without an ARM condition suffix (adds, vadd.f32 ...)
+
+    def __post_init__(self):
+        if not self.full:
+            self.full = self.cs.mnemonic
 
     @property
     def mnemonic(self):
-        return self.cs.mnemonic.split('.')[0]
+        return self.full.split('.')[0]
 
 
 @dataclass
@@ -30,9 +41,22 @@ class Function:
     thumb: bool
     kind: str  # code / import_stub / data_end_marker
     row: dict  # the inventory row (counts and flags)
-    instructions: list = field(default_factory=list)  # sorted by address
     jumptables: dict = field(default_factory=dict)  # tbb/tbh site -> [case targets]
     landing_pads: list = field(default_factory=list)
+    decoder: object = None  # () -> instructions
+    _instructions: list = None
+
+    @property
+    def instructions(self):
+        """sorted by address; decoded on first use and kept until release()"""
+        if self._instructions is None:
+            self._instructions = self.decoder() if self.decoder else []
+        return self._instructions
+
+    def release(self):
+        """drop the decoded instructions (Capstone details take about 1.7 KB per instruction: the
+        whole eboot at once needs over 6 GB)"""
+        self._instructions = None
 
     @property
     def uses_neon(self):
@@ -78,14 +102,34 @@ class Module:
             start, end = int(row['start'], 16), int(row['end'], 16)
             thumb = row['mode'] == 'thumb'
             f = Function(start + delta, end + delta, thumb, row['kind'], row)
-            for addr, (size, it_cond) in sorted(self.inv.func_insns.get(start, {}).items()):
-                o = addr - text
-                cs = next(self.md[thumb].disasm(self.inv.code[o:o + size], addr + delta, 1))
-                f.instructions.append(Instruction(addr + delta, size, it_cond, cs))
+            f.decoder = (lambda start=start, thumb=thumb: self._decode(start, thumb))
+            for addr in self.inv.func_insns.get(start, {}):
                 if addr + delta in tables:
                     f.jumptables[addr + delta] = tables[addr + delta]
             f.landing_pads = sorted(p + delta for p in self.inv.landing_pads.get(start, ()))
             self.functions.append(f)
+
+    def _decode(self, start, thumb):
+        """the instructions of the function at ELF address `start`"""
+        text, delta = self.inv.text.vaddr, self.delta
+        out = []
+        for addr, (size, it_cond) in sorted(self.inv.func_insns.get(start, {}).items()):
+            o = addr - text
+            cs = next(self.md[thumb].disasm(self.inv.code[o:o + size], addr + delta, 1))
+            full = cs.mnemonic
+            if not thumb and cs.cc in CC_NAME:
+                # ARM: every instruction may be conditional; Capstone appends the condition
+                cond = CC_NAME[cs.cc]
+                head, _, tail = full.partition('.')
+                for spelling in CC_SPELLINGS.get(cond, (cond,)):
+                    if head.endswith(spelling):
+                        head = head[:-2]
+                        break
+                full = head + ('.' + tail if tail else '')
+                # b<cond> is a conditional branch in the semantics; everything else is wrapped
+                it_cond = None if head == 'b' else cond
+            out.append(Instruction(addr + delta, size, it_cond, cs, full))
+        return out
 
     def mode_of(self, addr):
         """Thumb (True) / ARM (False) of a function entry at a runtime address, or None"""

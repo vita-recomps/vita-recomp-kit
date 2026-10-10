@@ -11,6 +11,7 @@
 
 #include "armrecomp.h"
 
+#include <bit>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -361,6 +362,49 @@ struct IShlReg {
         return T(a >> -shift);
     }
 };
+
+struct ICnt { template <typename T> T operator()(T a, bool &) const { return T(std::popcount(std::make_unsigned_t<T>(a))); } };
+struct IClz { template <typename T> T operator()(T a, bool &) const { return T(std::countl_zero(std::make_unsigned_t<T>(a))); } };
+// shift and insert: vsli keeps the low `amount` bits of d, vsri the high ones (f(d, m, m))
+struct ISliImm {
+    unsigned amount;
+    template <typename T> T operator()(T d, T m, T, bool &) const {
+        using U = std::make_unsigned_t<T>;
+        const U keep = amount >= sizeof(T) * 8 ? U(~U(0)) : U((U(1) << amount) - 1);
+        const U shifted = amount >= sizeof(T) * 8 ? U(0) : U(U(m) << amount);
+        return T(shifted | (U(d) & keep));
+    }
+};
+struct ISriImm {
+    unsigned amount;
+    template <typename T> T operator()(T d, T m, T, bool &) const {
+        using U = std::make_unsigned_t<T>;
+        constexpr unsigned bits = sizeof(T) * 8;
+        const U keep = amount >= bits ? U(~U(0)) : U(~(U(~U(0)) >> amount));
+        const U shifted = amount >= bits ? U(0) : U(U(m) >> amount);
+        return T(shifted | (U(d) & keep));
+    }
+};
+
+// vpaddl: adjacent pairs of m added into lanes twice as wide; NW wide lanes
+template <typename TN, typename TW, int NW>
+inline void paddl(GuestContext *c, unsigned d, unsigned m) {
+    const auto a = vget<TN, 2 * NW>(c, m);
+    Vec<TW, NW> r;
+    for (int i = 0; i < NW; i++)
+        r.e[i] = TW(TW(a.e[2 * i]) + TW(a.e[2 * i + 1]));
+    vset(c, d, r);
+}
+
+// vswp: exchange two d (Count 1) or q (Count 2) registers
+template <int Count>
+inline void vswp(GuestContext *c, unsigned d, unsigned m) {
+    for (int i = 0; i < Count; i++) {
+        const uint64_t t = c->vfp.d[d + i];
+        c->vfp.d[d + i] = c->vfp.d[m + i];
+        c->vfp.d[m + i] = t;
+    }
+}
 
 // narrowing: N is the narrow type
 template <typename TN>

@@ -109,7 +109,11 @@ inline bool cas(uint32_t a, T expected, T desired) {
 #endif
 
 // executed-instruction counter: every basic block adds its length (the Vita3K fork's counters)
-#ifdef RECOMP_COUNT_INSNS
+#if defined(RECOMP_TEST_BUDGET)
+// the test harness: counts and stops a native run that goes on far longer than dynarmic's did
+void test_budget(GuestContext *ctx, uint32_t n);
+#define RECOMP_COUNT(n) test_budget(ctx, (n))
+#elif defined(RECOMP_COUNT_INSNS)
 #define RECOMP_COUNT(n) (ctx->insns += (n))
 #else
 #define RECOMP_COUNT(n) ((void)0)

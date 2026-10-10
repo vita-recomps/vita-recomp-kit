@@ -29,6 +29,7 @@ struct TestMemory {
     uint32_t code_addr = 0; // first byte of the code window (an IT instruction may precede the test)
     std::vector<uint8_t> code;
     std::map<uint32_t, uint8_t> written;
+    bool native = false; // the native side's memory: capped (an exception must not cross dynarmic's frames)
 
     uint8_t read8(uint32_t a) const {
         if (a - code_addr < code.size())
@@ -40,7 +41,7 @@ struct TestMemory {
         h *= 0x2c1b3c6du;
         return uint8_t(h >> 24);
     }
-    void write8(uint32_t a, uint8_t v) { written[a] = v; }
+    void write8(uint32_t a, uint8_t v);
 };
 
 static TestMemory *g_mem = nullptr;
@@ -61,10 +62,24 @@ struct LeftNative {
     uint32_t pc;
 };
 void call_indirect(GuestContext *, uint32_t addr) { throw LeftNative{"call_indirect", addr}; }
+
+// runaway guards: a native function test that never ends (or writes without end) is a failure,
+// not a hung machine
+void test_budget(GuestContext *ctx, uint32_t n) {
+    ctx->insns += n;
+    if (ctx->insns > 20'000'000)
+        throw LeftNative{"runaway (instruction budget)", ctx->r[15]};
+}
 void call_import(GuestContext *, uint32_t addr) { throw LeftNative{"call_import", addr}; }
 void escape(GuestContext *, uint32_t pc) { throw LeftNative{"escape", pc}; }
 void unsupported(GuestContext *, uint32_t pc) { throw LeftNative{"unsupported", pc}; }
 } // namespace armrecomp
+
+void TestMemory::write8(uint32_t a, uint8_t v) {
+    if (native && written.size() > 4'000'000)
+        throw LeftNative{"runaway (memory writes)", a};
+    written[a] = v;
+}
 
 // --- dynarmic environment -----------------------------------------------------------------------
 
@@ -75,10 +90,13 @@ struct DynEnv final : Dynarmic::A32::UserCallbacks {
     uint64_t ticks_left = 0;
     Dynarmic::A32::Jit *jit = nullptr;
     bool returned = false;
+    bool arm = false; // the code under test is ARM: pad with the ARM `b .`
 
     std::optional<std::uint32_t> MemoryReadCode(std::uint32_t a) override {
         // the test window, `svc #0` at the sentinel, and `b .` (0xE7FE) in every other halfword,
         // so execution stops when it leaves the window
+        if (arm && a != SENTINEL && a - g_mem->code_addr >= g_mem->code.size())
+            return 0xEAFFFFFEu;
         const auto half = [](uint32_t x) -> uint32_t {
             if (x - g_mem->code_addr < g_mem->code.size())
                 return g_mem->read8(x) | uint32_t(g_mem->read8(x + 1)) << 8;
@@ -160,8 +178,8 @@ static State random_state(std::mt19937 &rng) {
     return s;
 }
 
-static uint32_t cpsr_of(const State &s) {
-    return 0x30u | s.n << 31 | s.z << 30 | s.c << 29 | s.v << 28 | s.q << 27 | (s.ge & 0xf) << 16; // Thumb, user mode
+static uint32_t cpsr_of(const State &s, bool thumb = true) {
+    return (thumb ? 0x30u : 0x10u) | s.n << 31 | s.z << 30 | s.c << 29 | s.v << 28 | s.q << 27 | (s.ge & 0xf) << 16; // Thumb, user mode
 }
 
 // differences between the native and the dynarmic end states (flags optional: a whole function
@@ -203,6 +221,7 @@ static void compare(const GuestContext &ctx, Dynarmic::A32::Jit &jit, const Test
 static bool run_one(const TestCase &tc, const State &in, std::string &diff, Dynarmic::A32::Jit &jit, DynEnv &env) {
     // code window: [IT] instruction
     TestMemory native_mem, dyn_mem;
+    native_mem.native = true;
     for (TestMemory *m : {&native_mem, &dyn_mem}) {
         m->code_addr = tc.addr - (tc.it_cond >= 0 ? 2 : 0);
         m->code.clear();
@@ -235,7 +254,8 @@ static bool run_one(const TestCase &tc, const State &in, std::string &diff, Dyna
     jit.ClearExclusiveState();
     std::copy(in.r, in.r + 16, jit.Regs().begin());
     jit.Regs()[15] = native_mem.code_addr;
-    jit.SetCpsr(cpsr_of(in));
+    env.arm = !tc.thumb;
+    jit.SetCpsr(cpsr_of(in, tc.thumb));
     std::copy(in.ext, in.ext + 64, jit.ExtRegs().begin());
     jit.SetFpscr(in.fpscr);
     g_mem = &dyn_mem;
@@ -255,6 +275,7 @@ enum class Outcome { same, differ, skipped };
 
 static Outcome run_function(const FunctionTest &ft, const State &in, std::string &diff, Dynarmic::A32::Jit &jit, DynEnv &env) {
     TestMemory native_mem, dyn_mem;
+    native_mem.native = true;
     for (TestMemory *m : {&native_mem, &dyn_mem}) {
         m->code_addr = ft.start;
         m->code.assign(ft.code, ft.code + ft.size);
@@ -266,7 +287,8 @@ static Outcome run_function(const FunctionTest &ft, const State &in, std::string
     std::copy(in.r, in.r + 16, jit.Regs().begin());
     jit.Regs()[14] = SENTINEL | 1;
     jit.Regs()[15] = ft.start;
-    jit.SetCpsr(cpsr_of(in));
+    env.arm = !ft.thumb;
+    jit.SetCpsr(cpsr_of(in, ft.thumb));
     std::copy(in.ext, in.ext + 64, jit.ExtRegs().begin());
     jit.SetFpscr(in.fpscr);
     g_mem = &dyn_mem;
