@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 
 from capstone import arm
 
+from . import neon
+
 REGS = {f'r{i}': i for i in range(16)}
 REGS.update({'sb': 9, 'sl': 10, 'fp': 11, 'ip': 12, 'sp': 13, 'lr': 14, 'pc': 15})
 
@@ -899,6 +901,12 @@ def vfp(cx, mnemonic):
     if base == 'vcvt':
         convert(cx, types, ops)
         return
+    if base in ('vcvtb', 'vcvtt') and types == ['f32', 'f16']:
+        # half precision in the bottom (vcvtb) or top (vcvtt) half of s<m> -> single
+        (_, n0), (_, n1) = vreg(cx, ops[0]), vreg(cx, ops[1])
+        shift = 0 if base == 'vcvtb' else 16
+        cx.emit(f'ctx->vfp.s[{n0}] = half_to_single(uint16_t(ctx->vfp.s[{n1}] >> {shift}));')
+        return
     raise Unsupported(base)
 
 
@@ -1060,7 +1068,10 @@ def translate(ins, thumb, imports, func_start, func_end, jumptables, patched=fro
             else:
                 raise Unsupported(f'mrc {cs.op_str}')
         elif m.startswith('v'):
-            vfp(cx, m)
+            if neon.is_neon(cx):
+                neon.translate(cx)
+            else:
+                vfp(cx, m)
         else:
             raise Unsupported(m)
     except Exception as e:  # Unsupported, or a decoder shape this code does not expect yet

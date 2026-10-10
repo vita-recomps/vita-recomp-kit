@@ -127,8 +127,14 @@ static uint32_t interesting(std::mt19937 &rng) {
 
 static uint32_t random_float_bits(std::mt19937 &rng) {
     std::uniform_real_distribution<float> d(-1000.f, 1000.f);
-    switch (rng() % 6) {
+    // zeros, denormals, infinities, quiet and signalling NaNs, and values the estimate/step
+    // instructions treat specially
+    static const uint32_t special[] = {0x00000000, 0x80000000, 0x00000001, 0x807fffff, 0x00400000, 0x7f800000,
+                                       0xff800000, 0x7fc00000, 0x7f800001, 0xffc00001, 0x3f800000, 0xbf800000,
+                                       0x7f7fffff, 0x00800000, 0x40000000, 0x3fc00000, 0x7e800000, 0x01000000};
+    switch (rng() % 8) {
     case 0: return rng();
+    case 7: return special[rng() % (sizeof(special) / 4)];
     case 1: { float f = float(int32_t(rng() % 2001) - 1000); uint32_t u; std::memcpy(&u, &f, 4); return u; }
     default: { float f = d(rng); uint32_t u; std::memcpy(&u, &f, 4); return u; }
     }

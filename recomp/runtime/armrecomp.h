@@ -236,6 +236,26 @@ inline uint32_t vfp_to_u32(T x) {
     return uint32_t(x);
 }
 
+// IEEE half -> single bits (exact; FPSCR.AHP = 0). A NaN keeps its payload and becomes quiet.
+inline uint32_t half_to_single(uint16_t h) {
+    const uint32_t sign = uint32_t(h & 0x8000u) << 16;
+    const uint32_t exp = (h >> 10) & 0x1f, frac = h & 0x3ffu;
+    if (exp == 0x1f)
+        return sign | 0x7f800000u | (frac ? (frac << 13) | 0x400000u : 0);
+    if (exp == 0) {
+        if (frac == 0)
+            return sign;
+        // frac/1024 * 2^-14: normalise; after k shifts the value is f/1024 * 2^(-14-k)
+        uint32_t f = frac, k = 0;
+        while (!(f & 0x400u)) {
+            f <<= 1;
+            k++;
+        }
+        return sign | (127 - 14 - k) << 23 | (f & 0x3ffu) << 13;
+    }
+    return sign | (exp - 15 + 127) << 23 | frac << 13;
+}
+
 inline uint32_t ror32(uint32_t x, uint32_t n) {
     n &= 31;
     return n ? (x >> n) | (x << (32 - n)) : x;
