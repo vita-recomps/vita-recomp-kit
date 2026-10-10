@@ -927,10 +927,33 @@ def float_lit(v):
 
 
 def convert(cx, types, ops):
-    """vcvt.<to>.<from>; fixed-point forms (a third immediate operand) are not used here"""
-    if len(ops) != 2:
-        raise Unsupported('vcvt fixed point')
+    """vcvt.<to>.<from>, and the single-precision fixed-point forms (a third operand: fraction bits)"""
     to, frm = types[0], types[1]
+    if len(ops) == 3:
+        # VCVT between single precision and fixed point, in place: to fixed rounds towards zero and
+        # saturates (16-bit results extended to the register); from fixed rounds once, as FPSCR says
+        k, n = vreg(cx, ops[0])
+        if k != 's' or ops[2].type != arm.ARM_OP_IMM:
+            raise Unsupported(f'vcvt.{to}.{frm} fixed point')
+        scale = float_lit(2.0 ** ops[2].imm)
+        if frm == 'f32' and to in ('s32', 'u32', 's16', 'u16'):
+            x = f'double(ctx->vfp.f[{n}]) * {scale}'
+            expr = {
+                's32': f'vfp_to_s32({x})',
+                'u32': f'vfp_to_u32({x})',
+                's16': f'uint32_t(int32_t(std::clamp<int32_t>(int32_t(vfp_to_s32({x})), -32768, 32767)))',
+                'u16': f'std::min<uint32_t>(vfp_to_u32({x}), 0xffffu)',
+            }[to]
+            cx.emit(f'ctx->vfp.s[{n}] = {expr};')
+        elif to == 'f32' and frm in ('s32', 'u32', 's16', 'u16'):
+            src = {'s32': f'int32_t(ctx->vfp.s[{n}])', 'u32': f'ctx->vfp.s[{n}]',
+                   's16': f'int16_t(ctx->vfp.s[{n}])', 'u16': f'uint16_t(ctx->vfp.s[{n}])'}[frm]
+            cx.emit(f'ctx->vfp.f[{n}] = float(double({src}) / {scale});')
+        else:
+            raise Unsupported(f'vcvt.{to}.{frm} fixed point')
+        return
+    if len(ops) != 2:
+        raise Unsupported('vcvt form')
     k0, n0 = vreg(cx, ops[0])
     k1, n1 = vreg(cx, ops[1])
     if to == 'f64' and frm == 'f32':
@@ -973,7 +996,7 @@ def translate(ins, thumb, imports, func_start, func_end, jumptables, patched=fro
         base = m[:-1]  # 16-bit form inside an IT block
 
     try:
-        if m.startswith('it') and len(m) <= 4 and set(m[1:]) <= {'t', 'e'}:
+        if m.startswith('it') and len(m) <= 5 and set(m[1:]) <= {'t', 'e'}:
             t.kind = 'it'
         elif m in ('dmb', 'dsb'):
             # other threads (native or on the JIT) see memory in program order around barriers
@@ -1079,6 +1102,12 @@ def translate(ins, thumb, imports, func_start, func_end, jumptables, patched=fro
                 cx.emit(f'ctx->r[{cx.ridx(ops[2])}] = ctx->tpidruro;')
             else:
                 raise Unsupported(f'mrc {cs.op_str}')
+        elif m == 'mcr':
+            # mcr p15, 0, rd, c13, c0, 3: write TPIDRURO (kernel modules: the firmware's sysmodule)
+            if 'c13, c0, #3' in cs.op_str and 'p15' in cs.op_str:
+                cx.emit(f'ctx->tpidruro = {cx.r(cx.ridx(ops[2]))};')
+            else:
+                raise Unsupported(f'mcr {cs.op_str}')
         elif m.startswith('v'):
             if neon.is_neon(cx):
                 neon.translate(cx)

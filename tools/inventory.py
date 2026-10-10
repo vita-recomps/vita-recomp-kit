@@ -220,7 +220,7 @@ class Inventory:
                         c['neon'] += 1
                 if m in ('push', 'stmdb', 'stmfd') and 'lr' in ops:
                     pushed_lr = True
-                if m.startswith('it') and len(m) <= 4 and set(m[1:]) <= {'t', 'e'}:
+                if m.startswith('it') and len(m) <= 5 and set(m[1:]) <= {'t', 'e'}:
                     first = ops.strip()
                     it_conds = tuple(first if ch == 't' else INVERSE_COND[first] for ch in 't' + m[2:])
                     addr = nxt

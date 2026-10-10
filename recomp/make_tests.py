@@ -19,7 +19,7 @@ from forms import form  # noqa: E402
 
 COND_CODE = {'eq': 0, 'ne': 1, 'cs': 2, 'hs': 2, 'cc': 3, 'lo': 3, 'mi': 4, 'pl': 5, 'vs': 6, 'vc': 7,
              'hi': 8, 'ls': 9, 'ge': 10, 'lt': 11, 'gt': 12, 'le': 13}
-SKIP = ('ldrex', 'strex', 'clrex', 'mrc')  # exclusives: single-thread semantics in v0; mrc: TLS
+SKIP = ('ldrex', 'strex', 'clrex', 'mrc', 'mcr')  # exclusives: single-thread semantics in v0; mrc/mcr: TLS (no CP15 in the harness)
 CONTROL = ('branch', 'cond_branch', 'jumptable')
 MAX_FUNCTION_BYTES = 4096
 

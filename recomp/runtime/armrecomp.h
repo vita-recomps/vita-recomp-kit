@@ -8,6 +8,7 @@
 
 #include "aot_abi.h"
 
+#include <algorithm>
 #include <atomic>
 #include <climits>
 #include <cmath>
