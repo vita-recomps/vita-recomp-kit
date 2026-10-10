@@ -206,6 +206,93 @@ def var_import_relocs(elf, table, nid):
     return out
 
 
+RELOC_CODE_NAMES = {0: 'None', 2: 'Abs32', 3: 'Rel32', 8: 'Abs8', 10: 'ThumbCall', 28: 'Call', 29: 'Jump24',
+                    38: 'Target1', 40: 'V4BX', 41: 'Target2', 42: 'Prel31', 43: 'MovwAbsNc', 44: 'MovtAbs',
+                    47: 'ThumbMovwAbsNc', 48: 'ThumbMovtAbs', 255: 'RBase'}
+
+
+def relocation_sites(elf):
+    """Every place the loader patches through the module's relocation segments (type 0x60000000):
+    [(ELF address, reloc code)]. Mirrors the address bookkeeping of Vita3K's relocate()
+    (kernel/src/relocation.cpp, formats 0-9); the values written are not needed here."""
+    out = []
+    for seg in elf.segments:
+        if seg.type != 0x60000000:
+            continue
+        d = elf.data[seg.offset:seg.offset + seg.filesz]
+        u32 = lambda o: int.from_bytes(d[o:o + 4], 'little')
+        g_addr = g_offset = 0
+        g_type = g_type2 = 0
+        o = 0
+        while o < len(d):
+            w = u32(o)
+            fmt = w & 0xf
+            if fmt == 0:
+                code, patch_seg, code2, dist2 = (w >> 8) & 0xff, (w >> 16) & 0xf, (w >> 20) & 0xff, (w >> 28) & 0xf
+                offset = u32(o + 8)
+                g_addr, g_offset = elf.segments[patch_seg].vaddr, offset
+                g_type, g_type2 = code, code2
+                p = g_addr + offset
+                out.append((p, code))
+                if code2:
+                    out.append((p + dist2 * 2, code2))
+                o += 12
+            elif fmt == 1:
+                code, patch_seg, off_lo = (w >> 8) & 0xff, (w >> 16) & 0xf, (w >> 20) & 0xfff
+                off_hi = u32(o + 4) & 0x3ff
+                g_addr, g_offset = elf.segments[patch_seg].vaddr, off_lo | off_hi << 12
+                g_type, g_type2 = code, 0
+                out.append((g_addr + g_offset, code))
+                o += 8
+            elif fmt == 2:
+                code, offset = (w >> 8) & 0xff, (w >> 16) & 0xffff
+                g_offset += offset
+                g_type, g_type2 = code, 0
+                out.append((g_addr + g_offset, code))
+                o += 8
+            elif fmt == 3:
+                mode, offset, dist2 = (w >> 8) & 1, (w >> 9) & 0x3ffff, (w >> 27) & 0x1f
+                g_type, g_type2 = (47, 48) if mode else (43, 44)
+                g_offset += offset
+                p = g_addr + g_offset
+                out += [(p, g_type), (p + dist2, g_type2)]
+                o += 8
+            elif fmt == 4:
+                offset, dist2 = (w >> 4) & 0x7fffff, (w >> 27) & 0x1f
+                g_offset += offset
+                p = g_addr + g_offset
+                out += [(p, g_type), (p + dist2, g_type2)]
+                o += 4
+            elif fmt == 5:
+                dist1, dist2, dist3, dist4 = (w >> 4) & 0x1ff, (w >> 13) & 0x1f, (w >> 18) & 0x1ff, (w >> 27) & 0x1f
+                g_offset += dist1
+                p = g_addr + g_offset
+                out += [(p, g_type), (p + dist2, g_type2)]
+                g_offset += dist3
+                p = g_addr + g_offset
+                out += [(p, g_type), (p + dist4, g_type2)]
+                o += 4
+            elif fmt == 6:
+                g_offset += (w >> 4) & 0xfffffff
+                g_type, g_type2 = 2, 0
+                out.append((g_addr + g_offset, 2))
+                o += 4
+            elif fmt in (7, 8, 9):
+                bits, mask = {7: (7, 0x7f), 8: (4, 0xf), 9: (2, 0x3)}[fmt]
+                offsets = w >> 4
+                while True:
+                    g_offset += (offsets & mask) * 4
+                    out.append((g_addr + g_offset, 2))
+                    offsets >>= bits
+                    if not offsets:
+                        break
+                g_type, g_type2 = 2, 0
+                o += 4
+            else:
+                raise ValueError(f'{elf.name}: relocation format {fmt} at segment offset {o:#x}')
+    return out
+
+
 def load(path, nid_db=None):
     d = open(path, 'rb').read()
     e_type = struct.unpack_from('<H', d, 16)[0]

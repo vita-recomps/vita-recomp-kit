@@ -50,8 +50,7 @@ def function_tests(mod, out, count):
     for f in funcs:
         text, _ = FunctionEmitter(f, mod, {f.start}).emit()
         lines.append('static ' + text)
-        o = f.start - mod.inv.text.vaddr
-        code = mod.inv.code[o:o + (f.end - f.start)]
+        code = mod.code_bytes(f.start, f.end - f.start)
         lines.append(f'static const uint8_t code_{f.start:08x}[] = {{')
         for k in range(0, len(code), 24):
             lines.append('    ' + ', '.join(f'0x{b:02x}' for b in code[k:k + 24]) + ',')

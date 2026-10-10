@@ -1,6 +1,9 @@
 """Recompile a Vita module's code to C++ (plan Phase 3, docs/decisions.md D6).
 
-usage: python -I recomp/recompile.py <elf> <out dir> [--bucket-bytes N] [--only ADDR,...]
+usage: python -I recomp/recompile.py <elf> <out dir> [--load-base HEX] [--bucket-bytes N] [--only ADDR,...]
+
+--load-base: where Vita3K loads a relocatable module's code segment (libc 8031e000, libfios2
+8036f000, libult 80454000 on 1.30); the code is generated for that address
 
 Writes to <out dir> (under generated/, never committed):
   funcs.h          prototypes of every recompiled function
@@ -8,7 +11,7 @@ Writes to <out dir> (under generated/, never committed):
   table.cpp        sorted address -> function table, module name and code hash (aot_abi.h)
   report.txt       coverage: recompiled / left to the fallback CPU, unsupported instructions
 """
-import collections, glob, io, os, sys, time
+import bisect, collections, glob, io, os, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from armrecomp.frontend import Module  # noqa: E402
@@ -59,11 +62,12 @@ def main():
     only = None
     if '--bucket-bytes' in args:
         bucket_bytes = int(args[args.index('--bucket-bytes') + 1])
+    load_base = int(args[args.index('--load-base') + 1], 16) if '--load-base' in args else None
     if '--only' in args:
         only = {int(x, 16) for x in args[args.index('--only') + 1].split(',')}
     os.makedirs(out, exist_ok=True)
     t0 = time.time()
-    mod = Module(elf)
+    mod = Module(elf, load_base=load_base)
     print(f'decoded in {time.time() - t0:.0f} s')
 
     reasons = collections.Counter()
@@ -115,15 +119,21 @@ def main():
             fh.write(f'void {fname(f.start)}(GuestContext *ctx);\n')
         fh.write('} // namespace armrecomp\n')
     # identity of the code the functions were generated from (aot_abi.h AotModule::code_hash)
-    # instructions the loader rewrites (variable imports) are hashed as zero
-    patched = sorted(a for a in mod.patched if any(f.start <= a < f.end for f in native))
+    # words the loader rewrites (variable imports, relocations) are hashed as zero
+    ranges = sorted((f.start, f.end) for f in native)
+    starts = [r[0] for r in ranges]
+    def in_native(a):
+        i = bisect.bisect_right(starts, a) - 1
+        return i >= 0 and a < ranges[i][1]
+    patched = sorted(a for a in mod.patched_words if in_native(a))
     code = bytearray(mod.inv.code)
+    base = mod.inv.text.vaddr + mod.delta  # runtime address of code[0]
     for a in patched:
-        o = a - mod.inv.text.vaddr
+        o = a - base
         code[o:o + 4] = bytes(4)
     code_hash = 0xcbf29ce484222325
     for f in native:
-        o = f.start - mod.inv.text.vaddr
+        o = f.start - base
         for b in code[o:o + (f.end - f.start)]:
             code_hash = ((code_hash ^ b) * 0x100000001b3) & 0xffffffffffffffff
     with Output(os.path.join(out, 'table.cpp')) as fh:

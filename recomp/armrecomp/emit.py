@@ -197,7 +197,7 @@ class FunctionEmitter:
         return []
 
     def module_mode(self, callee, ins):
-        mode = self.module.inv.mode_of.get(callee)
+        mode = self.module.mode_of(callee)
         if mode is None:
             mode = (ins.cs.mnemonic == 'bl') == self.f.thumb
         return 1 if mode else 0
