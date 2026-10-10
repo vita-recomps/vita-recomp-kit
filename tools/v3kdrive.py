@@ -8,6 +8,7 @@ window. FPS is sampled from the game window title ("... | 30 FPS (33 ms) | 960x5
 
 usage:
   python -I v3kdrive.py <vita3k dir> launch <TITLEID> [Vulkan|OpenGL]  start Vita3K and boot the app
+  python -I v3kdrive.py <vita3k dir> start                   start ss-delta.exe (settings: its ss-delta.ini)
   python -I v3kdrive.py <vita3k dir> run "<steps>" [fps.csv]  run steps against the open window
   python -I v3kdrive.py <vita3k dir> bootseq <TITLEID> <name>  set BootSequence in the installed config.ini
   python -I v3kdrive.py <vita3k dir> title                   print the game window title
@@ -44,18 +45,20 @@ KEYS = {
 PIPE = r"\\.\pipe\v3kdrive"
 STICKS = {"ls_up": (1, -1.0), "ls_down": (1, 1.0), "ls_left": (0, -1.0), "ls_right": (0, 1.0),
           "rs_up": (3, -1.0), "rs_down": (3, 1.0), "rs_left": (2, -1.0), "rs_right": (2, 1.0)}
+IMAGES = ("Vita3K.exe", "ss-delta.exe")
 TITLE_RE = re.compile(r"\| (?:\S+) \| (\d+) FPS \((\d+) ms\) \| (\d+)x(\d+)")
 
 
 def windows():
-    """(hwnd, title) for every visible top-level window owned by a Vita3K.exe process."""
+    """(hwnd, title) for every visible top-level window owned by a Vita3K.exe or ss-delta.exe process."""
     out = []
     pids = set()
-    r = subprocess.run(["tasklist", "/FI", "IMAGENAME eq Vita3K.exe", "/FO", "CSV", "/NH"],
-                       capture_output=True, text=True)
-    for row in csv.reader(r.stdout.splitlines()):
-        if len(row) > 1 and row[0].lower() == "vita3k.exe":
-            pids.add(int(row[1]))
+    for image in IMAGES:
+        r = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {image}", "/FO", "CSV", "/NH"],
+                           capture_output=True, text=True)
+        for row in csv.reader(r.stdout.splitlines()):
+            if len(row) > 1 and row[0].lower() == image.lower():
+                pids.add(int(row[1]))
 
     @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
     def cb(hwnd, _):
@@ -216,6 +219,17 @@ def run(steps, fps_csv):
                 pad.set([b]); time.sleep(0.1); pad.release([b]); time.sleep(0.3)
 
 
+def wait_for_window():
+    t0 = time.time()
+    while time.time() - t0 < 60:
+        hwnd, title = game_window()
+        if hwnd:
+            print(f"game window after {time.time() - t0:.1f}s: {title}")
+            return
+        time.sleep(0.5)
+    print("no game window after 60 s; windows:", windows())
+
+
 def main():
     root, cmd = sys.argv[1], sys.argv[2]
     if cmd == "launch":
@@ -230,14 +244,12 @@ def main():
         env = dict(os.environ, VITA3K_INPUT_PIPE="v3kdrive")
         subprocess.Popen([exe, "-B", backend, "-r", sys.argv[3]], cwd=root, env=env,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        t0 = time.time()
-        while time.time() - t0 < 60:
-            hwnd, title = game_window()
-            if hwnd:
-                print(f"game window after {time.time() - t0:.1f}s: {title}")
-                return
-            time.sleep(0.5)
-        print("no game window after 60 s; windows:", windows())
+        wait_for_window()
+    elif cmd == "start":
+        env = dict(os.environ, VITA3K_INPUT_PIPE="v3kdrive")
+        subprocess.Popen([os.path.join(root, "ss-delta.exe")], cwd=root, env=env,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        wait_for_window()
     elif cmd == "run":
         run(sys.argv[3], sys.argv[4] if len(sys.argv) > 4 else None)
     elif cmd == "bootseq":
@@ -256,7 +268,8 @@ def main():
         for hwnd, t in windows():
             print(hwnd, t)
     elif cmd == "close":
-        subprocess.run(["taskkill", "/IM", "Vita3K.exe", "/F"], capture_output=True)
+        for image in IMAGES:
+            subprocess.run(["taskkill", "/IM", image, "/F"], capture_output=True)
 
 
 if __name__ == "__main__":
