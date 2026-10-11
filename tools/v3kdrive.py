@@ -22,6 +22,9 @@ Steps (comma separated):
   hold:<button>:ms  hold for ms; several buttons/sticks with +, e.g. hold:ls_up+r:2000
   wait <ms>         sleep, sampling FPS every 500 ms
   shot:<path>       PNG of the game window (PrintWindow; no focus needed)
+  frame:<path>      PNG of the frame at render resolution (ss-delta.exe, through the input pipe)
+  touch:<x>:<y>:ms  hold a finger on the front touchscreen at (x, y) of 960x544 (ss-delta.exe)
+  tdown:<x>:<y>     put the finger down and keep it there; tup lifts it
   mark:<label>      label the following FPS samples in the CSV
 """
 import csv, ctypes, os, re, subprocess, sys, time
@@ -195,6 +198,25 @@ class Pad:
         self.pipe.write("hold none\naxes 0 0 0 0\n")
         self.pipe.flush()
 
+    def touch(self, x, y):
+        # ss-delta.exe holds a front-touch finger at (x, y) on the 960x544 screen; None lifts it
+        self.connect()
+        if not self.pipe:
+            print("touch: needs the input pipe (ss-delta.exe)")
+            return
+        self.pipe.write("touch none\n" if x is None else f"touch {x} {y}\n")
+        self.pipe.flush()
+
+    def frame(self, path):
+        # ss-delta.exe saves the frame at render resolution on its next tick; give it a moment
+        self.connect()
+        if not self.pipe:
+            print("frame: needs the input pipe (ss-delta.exe)")
+            return
+        self.pipe.write("screenshot " + os.path.abspath(path) + "\n")
+        self.pipe.flush()
+        time.sleep(0.6)  # read back after the next frame, then written on a thread of its own
+
 
 def run(steps, fps_csv):
     hwnd, _ = game_window()
@@ -207,6 +229,16 @@ def run(steps, fps_csv):
             s.sleep(int(step.split()[1]))
         elif step.startswith("shot:"):
             capture(hwnd, step[5:])
+        elif step.startswith("frame:"):
+            pad.frame(step[6:])
+        elif step.startswith("tdown:"):
+            _, x, y = step.split(":")
+            pad.touch(float(x), float(y))
+        elif step == "tup":
+            pad.touch(None, None)
+        elif step.startswith("touch:"):
+            _, x, y, ms = step.split(":")
+            pad.touch(float(x), float(y)); s.sleep(int(ms)); pad.touch(None, None); time.sleep(0.1)
         elif step.startswith("mark:"):
             s.label = step[5:]
         elif step.startswith("hold:"):
