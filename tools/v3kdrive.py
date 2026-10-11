@@ -25,6 +25,7 @@ Steps (comma separated):
   frame:<path>      PNG of the frame at render resolution (ss-delta.exe, through the input pipe)
   touch:<x>:<y>:ms  hold a finger on the front touchscreen at (x, y) of 960x544 (ss-delta.exe)
   tdown:<x>:<y>     put the finger down and keep it there; tup lifts it
+  record:<n>:<dir>  save the next n rendered frames into dir (ss-delta.exe); returns at once
   mark:<label>      label the following FPS samples in the CSV
 """
 import csv, ctypes, os, re, subprocess, sys, time
@@ -207,6 +208,13 @@ class Pad:
         self.pipe.write("touch none\n" if x is None else f"touch {x} {y}\n")
         self.pipe.flush()
 
+    def record(self, count, path):
+        # ss-delta.exe saves the next `count` rendered frames into the folder; returns at once
+        self.connect()
+        if self.pipe:
+            self.pipe.write(f"record {count} {os.path.abspath(path)}\n")
+            self.pipe.flush()
+
     def frame(self, path):
         # ss-delta.exe saves the frame at render resolution on its next tick; give it a moment
         self.connect()
@@ -231,6 +239,9 @@ def run(steps, fps_csv):
             capture(hwnd, step[5:])
         elif step.startswith("frame:"):
             pad.frame(step[6:])
+        elif step.startswith("record:"):
+            _, n, path = step.split(":", 2)
+            pad.record(int(n), path)
         elif step.startswith("tdown:"):
             _, x, y = step.split(":")
             pad.touch(float(x), float(y))
@@ -300,6 +311,14 @@ def main():
         for hwnd, t in windows():
             print(hwnd, t)
     elif cmd == "close":
+        # ask the window to close first (no focus needed), so the log's async queue is written;
+        # force it after 8 s
+        hwnd, _ = game_window()
+        if hwnd:
+            user32.PostMessageW(hwnd, 0x0010, 0, 0)  # WM_CLOSE
+            end = time.time() + 8
+            while time.time() < end and game_window()[0]:
+                time.sleep(0.25)
         for image in IMAGES:
             subprocess.run(["taskkill", "/IM", image, "/F"], capture_output=True)
 
