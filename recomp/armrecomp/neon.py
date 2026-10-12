@@ -22,7 +22,7 @@ WIDER = {'int8_t': 'int16_t', 'int16_t': 'int32_t', 'int32_t': 'int64_t',
 NARROWER = {v: k for k, v in WIDER.items()}
 
 NEON_ONLY = {'vdup', 'vbif', 'vbit', 'vbsl', 'vext', 'vrev64', 'vrev32', 'vrev16', 'vtrn', 'vzip', 'vuzp',
-             'vtbl', 'vtbx', 'vld1', 'vst1', 'vpadd', 'vpmax', 'vpmin', 'vmull', 'vmlal', 'vmlsl', 'vmovn',
+             'vtbl', 'vtbx', 'vld1', 'vst1', 'vld2', 'vst2', 'vld3', 'vst3', 'vld4', 'vst4', 'vshll', 'vpadd', 'vpmax', 'vpmin', 'vmull', 'vmlal', 'vmlsl', 'vmovn',
              'vqmovn', 'vqmovun', 'vmovl', 'vaddw', 'vsubw', 'vaddl', 'vsubl', 'vshrn', 'vqshrn', 'vqshrun',
              'vrshrn', 'vshr', 'vsra', 'vshl', 'vqadd', 'vqsub', 'vqabs', 'vqneg', 'vtst', 'vceq', 'vcge',
              'vcgt', 'vcle', 'vclt', 'vacgt', 'vacge', 'vrecpe', 'vrecps', 'vrsqrte', 'vrsqrts', 'vmax',
@@ -93,7 +93,7 @@ def translate(cx):
     t0 = types[0] if types else None
 
     # --- loads and stores ---
-    if base in ('vld1', 'vst1'):
+    if base in ('vld1', 'vst1', 'vld2', 'vst2', 'vld3', 'vst3', 'vld4', 'vst4'):
         return load_store(cx, base, t0)
 
     # --- moves ---
@@ -122,6 +122,22 @@ def translate(cx):
                 imm8 = i_bit << 7 | (word >> 16 & 7) << 4 | (word & 0xf)
                 val = sum(0xff << (8 * k) for k in range(8) if imm8 >> k & 1)
         emit(f'vdup<{t}, {lanes(t, nb)}>(ctx, {d}, {t}(0x{val:x}ull));')
+        return
+    if base == 'vmov' and len(ops) == 2 and ops[1].type == arm.ARM_OP_REG and is_core(cx, ops[1]):
+        # vmov.8/16 dn[x], rt: the low bits of rt into one lane
+        d, _, lane = reg(cx, ops[0])
+        if lane is None:
+            raise Unsupported('vmov core to d without a lane')
+        t = ctype(t0)
+        emit(f'vsetlane<{t}>(ctx, {d}, {lane}, {t}({cx.r(ops[1])}));')
+        return
+    if base in ('vbic', 'vorr') and len(ops) == 2 and ops[1].type == arm.ARM_OP_IMM:
+        # vbic/vorr.i16/i32 dn, #imm: every lane with the (already expanded) immediate
+        d, nb, _ = reg(cx, ops[0])
+        t = ctype(t0)
+        val = ops[1].imm & ((1 << (8 * SIZE[t])) - 1)
+        f = 'IBic' if base == 'vbic' else 'IOrr'
+        emit(f'map1<{t}, {t}, {lanes(t, nb)}>(ctx, {d}, {d}, WithImm<{f}, {t}>{{{t}(0x{val:x}u)}});')
         return
     if base == 'vmov' and len(ops) == 2 and ops[0].type == arm.ARM_OP_REG and is_core(cx, ops[0]):
         # vmov.u16/s16/u8/s8 rt, dn[x]
@@ -331,6 +347,13 @@ def int_op(cx, base, types, ops):
             emit(f'map2<{t}, {t}, {n}>(ctx, {d}, {rs[1][0]}, {rs[2][0]}, IShlReg{{}});')
         return
     # long, wide, narrow
+    if base == 'vshll' and imm is not None:
+        # vshll.sN/uN (shift below N) and vshll.iN #N: widen, then shift left
+        if t0.startswith('i'):
+            t = UNSIGNED_OF.get(t, t)
+        tw = WIDER[t]
+        emit(f'shll<{t}, {tw}, {8 // SIZE[t]}>(ctx, {d}, {rs[1][0]}, {imm}u);')
+        return
     if base in ('vmull', 'vmlal', 'vaddl', 'vsubl'):
         tw = WIDER[t]
         ln = 8 // SIZE[t]
@@ -365,7 +388,8 @@ def int_op(cx, base, types, ops):
     raise Unsupported(f'{base}.{".".join(types)}')
 
 
-LIST_RE = re.compile(r'\{([^}]*)\},\s*\[(\w+)(?::(\d+))?\](!?)(?:,\s*(\w+))?$')
+# the alignment hint (:64 / :0x40 ...) only adds a fault check on hardware, and is ignored
+LIST_RE = re.compile(r'\{([^}]*)\},\s*\[(\w+)(?::(0x[0-9a-fA-F]+|\d+))?\](!?)(?:,\s*(\w+))?$')
 ITEM_RE = re.compile(r'd(\d+)(\[(\d*)\])?$')
 
 
@@ -384,7 +408,28 @@ def load_store(cx, base, t0):
     rn = S.REGS[m.group(2)] if m.group(2) in S.REGS else int(m.group(2)[1:])
     t = INT[t0]
     esize = SIZE[t]
-    load = base == 'vld1'
+    load = base.startswith('vld')
+    structs = int(base[3])  # elements per structure: vld1 .. vld4
+    if structs > 1:
+        # multiple n-element structures, interleaved in memory: element e of the structure's
+        # members k = 0 .. n-1 goes to (or comes from) d register list[k * per + r], where the
+        # list holds `per` registers per member (vld2 {d16-d19}: d16, d17 even, d18, d19 odd)
+        if any(s is not None for s in lane_spec) or len(dregs) % structs:
+            raise Unsupported(f'{base} lane or list form {m.group(1)}')
+        per = len(dregs) // structs
+        order = [dregs[k * per + r] for r in range(per) for k in range(structs)]
+        emit('{')
+        emit(f'const uint32_t addr = ctx->r[{rn}];')
+        emit(f'static constexpr uint8_t regs[] = {{{", ".join(map(str, order))}}};')
+        emit(f'{"vldn" if load else "vstn"}<{t}, {structs}>(ctx, regs, {per}u, addr);')
+        total = 8 * len(dregs)
+        if m.group(4):
+            emit(f'ctx->r[{rn}] = addr + {total}u;')
+        elif m.group(5):
+            rm = S.REGS[m.group(5)] if m.group(5) in S.REGS else int(m.group(5)[1:])
+            emit(f'ctx->r[{rn}] = addr + ctx->r[{rm}];')
+        emit('}')
+        return
     emit('{')
     emit(f'const uint32_t addr = ctx->r[{rn}];')
     if all(s is None for s in lane_spec):

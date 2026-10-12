@@ -184,6 +184,13 @@ def dp(cx, base, s):
                 t.kind = 'return'
                 t.writes_pc_via = 'lr'
                 return
+            if base == 'mov' and ops[1].type == arm.ARM_OP_REG and not ops[1].shift.type and cx.ridx(ops[1]) != 15:
+                # mov pc, rX: in Thumb a branch that stays in Thumb (BranchWritePC), in ARM an
+                # interworking one like bx (BXWritePC)
+                r = cx.r(cx.ridx(ops[1]))
+                cx.emit(f'ctx->r[15] = {r} | 1u;' if cx.thumb else f'ctx->r[15] = {r};')
+                t.kind = 'jump_indirect'
+                return
             raise Unsupported('write to pc')
         raise Unsupported('write to pc')
 

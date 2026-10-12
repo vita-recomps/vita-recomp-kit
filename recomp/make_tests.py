@@ -91,7 +91,10 @@ def main():
             if ins.mnemonic.startswith(SKIP):
                 continue
             key = (bytes(ins.cs.bytes), ins.it_cond)
-            slot = chosen[form(ins) if f.thumb else 'arm:' + form(ins)]
+            fm = form(ins)
+            if ins.mnemonic == 'vmov' and '.' in ins.cs.mnemonic:
+                fm += ' .' + ins.cs.mnemonic.split('.', 1)[1]  # lane moves by element size
+            slot = chosen[fm if f.thumb else 'arm:' + fm]
             if key in slot or len(slot) >= per_form:
                 continue
             t = semantics.translate(ins, f.thumb, mod.imports, f.start, f.end, f.jumptables)

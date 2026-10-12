@@ -32,7 +32,11 @@ def translatable(f, mod):
     """every instruction of f has a translation (NEON and ARM mode included)"""
     if f.thumb and not f.uses_neon:
         return True  # Thumb integer/VFP code always translates (report.txt counts any exception)
+    # in Thumb, as above, only a missing vector (v*) translation keeps the function on the fallback
+    # CPU: other unsupported instructions are data decoded as code (a literal pool after a call
+    # that does not return) and become a trap that is never reached
     return all(semantics.translate(ins, f.thumb, mod.imports, f.start, f.end, f.jumptables, mod.patched).kind != 'unsupported'
+               or (f.thumb and not ins.mnemonic.startswith('v'))
                for ins in f.instructions)
 
 

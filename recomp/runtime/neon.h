@@ -386,6 +386,23 @@ struct ISriImm {
     }
 };
 
+// a two-operand functor with its second operand fixed (vbic/vorr #imm)
+template <typename F, typename T>
+struct WithImm {
+    T imm;
+    T operator()(T a, bool &s) const { return F{}(a, imm, s); }
+};
+
+// vshll: each narrow lane of m widened (by its sign), then shifted left; N narrow lanes
+template <typename TN, typename TW, int N>
+inline void shll(GuestContext *c, unsigned d, unsigned m, unsigned shift) {
+    const auto a = vget<TN, N>(c, m);
+    Vec<TW, N> r;
+    for (int i = 0; i < N; i++)
+        r.e[i] = TW(std::make_unsigned_t<TW>(TW(a.e[i])) << shift);
+    vset(c, d, r);
+}
+
 // vpaddl: adjacent pairs of m added into lanes twice as wide; NW wide lanes
 template <typename TN, typename TW, int NW>
 inline void paddl(GuestContext *c, unsigned d, unsigned m) {
@@ -612,6 +629,31 @@ inline void vst1_regs(GuestContext *c, unsigned d, unsigned count, uint32_t addr
     for (unsigned i = 0; i < count; i++)
         wr64(addr + 8 * i, c->vfp.d[d + i]);
 }
+template <typename T>
+inline T rdT(uint32_t a);
+template <typename T>
+inline void wrT(uint32_t a, T v);
+
+// vld2..vld4 / vst2..vst4, multiple Structs-element structures: memory holds the structures one
+// after another; `regs` lists, for each block of 8 bytes per member, the members' d registers in
+// structure order (Structs * Per entries)
+template <typename T, int Structs>
+inline void vldn(GuestContext *c, const uint8_t *regs, unsigned per, uint32_t addr) {
+    constexpr unsigned lanes = 8 / sizeof(T);
+    for (unsigned r = 0; r < per; r++)
+        for (unsigned e = 0; e < lanes; e++)
+            for (unsigned k = 0; k < Structs; k++, addr += sizeof(T))
+                vsetlane<T>(c, regs[r * Structs + k], e, rdT<T>(addr));
+}
+template <typename T, int Structs>
+inline void vstn(GuestContext *c, const uint8_t *regs, unsigned per, uint32_t addr) {
+    constexpr unsigned lanes = 8 / sizeof(T);
+    for (unsigned r = 0; r < per; r++)
+        for (unsigned e = 0; e < lanes; e++)
+            for (unsigned k = 0; k < Structs; k++, addr += sizeof(T))
+                wrT<T>(addr, vlane<T>(c, regs[r * Structs + k], e));
+}
+
 template <typename T>
 inline T rdT(uint32_t a) {
     if constexpr (sizeof(T) == 1) return T(rd8(a));
