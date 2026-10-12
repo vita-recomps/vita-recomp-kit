@@ -14,6 +14,10 @@ usage:
   python -I v3kdrive.py <vita3k dir> title                   print the game window title
   python -I v3kdrive.py <vita3k dir> close                   close Vita3K
 
+  --player N (anywhere, ss-delta.exe): the copy of the game for Ad Hoc Play player N (2-4): start
+  passes it on, and the other commands use that copy's window and input pipe (v3kdrive<N>).
+  Without it they use player 1's.
+
 Steps (comma separated):
   <button>          tap (100 ms)          cross circle square triangle start select
                                           up down left right l r ls_up ls_down ls_left ls_right
@@ -46,7 +50,8 @@ KEYS = {
     "rs_right": (0x4C, 0x26, False),
     "f12": (0x7B, 0x58, False),
 }
-PIPE = r"\\.\pipe\v3kdrive"
+PIPE = r"\\.\pipe" + "\\"  # + v3kdrive, or v3kdrive<N> for player N
+PLAYER = 1  # --player N: Ad Hoc Play's copy N of ss-delta.exe (window "... (player N)")
 STICKS = {"ls_up": (1, -1.0), "ls_down": (1, 1.0), "ls_left": (0, -1.0), "ls_right": (0, 1.0),
           "rs_up": (3, -1.0), "rs_down": (3, 1.0), "rs_left": (2, -1.0), "rs_right": (2, 1.0)}
 IMAGES = ("Vita3K.exe", "ss-delta.exe")
@@ -80,9 +85,18 @@ def windows():
 
 def game_window():
     for hwnd, title in windows():
-        if "FPS" in title or "(PCSA" in title:
+        if ("FPS" in title or "(PCSA" in title) and player_of(title) == PLAYER:
             return hwnd, title
     return None, None
+
+
+def player_of(title):
+    m = re.search(r"\(player (\d)\)", title)
+    return int(m.group(1)) if m else 1
+
+
+def pipe_name():
+    return "v3kdrive" + (str(PLAYER) if PLAYER > 1 else "")
 
 
 def key(hwnd, name, down):
@@ -171,7 +185,7 @@ class Pad:
         while time.time() < end:
             try:
                 # O_WRONLY without O_CREAT opens the existing pipe; open(..., "w") would try to create it
-                self.pipe = os.fdopen(os.open(PIPE, os.O_WRONLY | os.O_BINARY), "w", newline="\n")
+                self.pipe = os.fdopen(os.open(PIPE + pipe_name(), os.O_WRONLY | os.O_BINARY), "w", newline="\n")
                 break
             except OSError:
                 time.sleep(0.1)  # not created yet, or busy between clients
@@ -274,6 +288,11 @@ def wait_for_window():
 
 
 def main():
+    global PLAYER
+    if "--player" in sys.argv:
+        i = sys.argv.index("--player")
+        PLAYER = int(sys.argv[i + 1])
+        del sys.argv[i:i + 2]
     root, cmd = sys.argv[1], sys.argv[2]
     if cmd == "launch":
         exe = os.path.join(root, "Vita3K.exe")
@@ -289,8 +308,9 @@ def main():
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         wait_for_window()
     elif cmd == "start":
-        env = dict(os.environ, VITA3K_INPUT_PIPE="v3kdrive")
-        subprocess.Popen([os.path.join(root, "ss-delta.exe")], cwd=root, env=env,
+        env = dict(os.environ, VITA3K_INPUT_PIPE=pipe_name())
+        args = ["--player", str(PLAYER)] if PLAYER > 1 else []
+        subprocess.Popen([os.path.join(root, "ss-delta.exe")] + args, cwd=root, env=env,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         wait_for_window()
     elif cmd == "run":
@@ -313,14 +333,20 @@ def main():
     elif cmd == "close":
         # ask the window to close first (no focus needed), so the log's async queue is written;
         # force it after 8 s
+        # while other players' copies run, only this copy's process is killed
         hwnd, _ = game_window()
+        others = [t for _, t in windows() if ("FPS" in t or "(PCSA" in t) and player_of(t) != PLAYER]
         if hwnd:
+            pid = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
             user32.PostMessageW(hwnd, 0x0010, 0, 0)  # WM_CLOSE
             end = time.time() + 8
             while time.time() < end and game_window()[0]:
                 time.sleep(0.25)
-        for image in IMAGES:
-            subprocess.run(["taskkill", "/IM", image, "/F"], capture_output=True)
+            subprocess.run(["taskkill", "/PID", str(pid.value), "/F"], capture_output=True)
+        if PLAYER == 1 and not others:
+            for image in IMAGES:
+                subprocess.run(["taskkill", "/IM", image, "/F"], capture_output=True)
 
 
 if __name__ == "__main__":
