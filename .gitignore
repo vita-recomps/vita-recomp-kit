@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# build output and recompiler output
+build/
+generated/
+out/
+*.exe
+*.dll
+*.lib
+*.obj
+*.pdb
+
+# game data and anything derived from it: never committed
+*.elf
+*.self
+*.velf
+*.bin
+*.pkg
+*.zip
+*.7z
+*.rif
+*.zrif
+*.pup
+*.sfo
+*.png
+*.jpg
+*.bmp
+*.wav
+*.log
+*.csv
