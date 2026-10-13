@@ -1,17 +1,46 @@
 """Linear sweep of every exidx function (start -> next start) with Capstone; instruction-class counts.
-usage: python -I imix.py <eboot.elf> <eboot.json from velf.py>"""
-import struct, sys, json, collections
+
+The code segment (file offset and address) and the end of the code (the start of .ARM.exidx) are
+read from the ELF's program headers and module_info; the options override them.
+
+usage: python -I imix.py <eboot.elf> [<eboot.json from velf.py>] [--seg-off HEX] [--seg-va HEX]
+                         [--exidx HEX]
+Without the velf.py JSON, the import stubs and exidx entries are read from the ELF (vitaelf.py)."""
+import collections, json, os, sys
 from capstone import Cs, CS_ARCH_ARM, CS_MODE_THUMB, CS_MODE_ARM
 
-d = open(sys.argv[1], 'rb').read()
-info = json.load(open(sys.argv[2]))
-SEG_OFF, SEG_VA = 0x100, 0x81000000
-stubs = {int(f['stub'], 16) for l in info['imports'].values() for f in l['funcs']}
-starts = sorted(set(info['exidx']))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import vitaelf  # noqa: E402
+
+args = sys.argv[1:]
+if not args or args[0] in ('-h', '--help'):
+    print(__doc__)
+    sys.exit(0 if args else 2)
+over = {}
+for opt in ('--seg-off', '--seg-va', '--exidx'):
+    if opt in args:
+        i = args.index(opt)
+        over[opt] = int(args[i + 1], 16)
+        del args[i:i + 2]
+elf = vitaelf.load(args[0])
+d = elf.data
+# the code segment is the one holding module_info (its index is in e_entry's top bits)
+text = next(g for g in elf.segments
+            if g.type == 1 and g.vaddr <= elf.module_info_va < g.vaddr + g.filesz)
+SEG_OFF = over.get('--seg-off', text.offset)
+SEG_VA = over.get('--seg-va', text.vaddr)
+EXIDX = over.get('--exidx', elf.exidx_range[0])
+print(f'code segment: offset {SEG_OFF:#x} address {SEG_VA:#x}; code ends at exidx {EXIDX:#x}', file=sys.stderr)
+if len(args) > 1:
+    info = json.load(open(args[1]))
+    stubs = {int(f['stub'], 16) for l in info['imports'].values() for f in l['funcs']}
+    starts = sorted(set(info['exidx']))
+else:
+    stubs = {i.stub for i in elf.imports}
+    starts = sorted({e.start for e in elf.exidx})
 md_t = Cs(CS_ARCH_ARM, CS_MODE_THUMB); md_a = Cs(CS_ARCH_ARM, CS_MODE_ARM)
 c = collections.Counter(); mn = collections.Counter()
 stop_reasons = collections.Counter()
-EXIDX = 0x81b2acd0
 for i, s in enumerate(starts):
     addr = s & ~1
     end = (starts[i + 1] & ~1) if i + 1 < len(starts) else EXIDX
