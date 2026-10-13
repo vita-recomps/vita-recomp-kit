@@ -94,6 +94,11 @@ class Module:
         self.patched = frozenset(a + delta for a in var_sites | {a for a, c in relocs if c in (47, 48)})
         # every patched word, for the code hash (runtime addresses)
         self.patched_words = frozenset(a + delta for a in var_sites | {a for a, _ in relocs})
+        # register jumps (bx rN) whose target the inventory resolved to a function entry (libc's
+        # memmove: movw/movt ip, memcpy; bx ip): site -> target, runtime addresses, Thumb bit kept
+        self.jump_targets = {int(r['site'], 16) + delta: int(r['target'], 16) + delta
+                             for r in self.inv.indirect
+                             if r['kind'] == 'jump_reg' and r['resolved'] and r['target_kind'] == 'function'}
         tables = {}
         for t in self.inv.jumptables:
             tables[int(t['site'], 16) + delta] = [int(x, 16) + delta for x in t['targets'].split()]

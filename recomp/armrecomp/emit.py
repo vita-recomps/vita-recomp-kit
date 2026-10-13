@@ -215,6 +215,10 @@ class FunctionEmitter:
                 return ['ctx->r[15] = ctx->r[14];', 'return;']
             return ['return;']
         if k == 'jump_indirect':
+            # a register jump to a known function entry is a tail call, as a direct branch to it
+            target = self.module.jump_targets.get(ins.address)
+            if target is not None and self.tail_call(target & ~1):
+                return [f'RECOMP_CALL({fname(target & ~1)}, 0x{target:08x}u);', 'return;']
             return ['escape(ctx, ctx->r[15]);']
         if k == 'jumptable':
             idx, targets = t.jumptable
