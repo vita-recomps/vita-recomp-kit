@@ -28,7 +28,7 @@ $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 if (-not $Root) {
     # the old layout (recomp\ inside the game project), or this repository as a submodule of it
-    foreach ($c in @($repo, (Split-Path -Parent $repo))) {
+    foreach ($c in @($repo, (Split-Path -Parent $repo), (Split-Path -Parent (Split-Path -Parent $repo)))) {
         if (Test-Path (Join-Path $c 'extracted\elf')) { $Root = $c; break }
     }
 }
