@@ -1,10 +1,10 @@
-# vita-recomp
+# vita-recomp-kit
 
 A shared toolchain for the static recompilation of PS Vita games: it turns a
 game's decrypted ARM (Thumb-2, ARM, VFP, NEON) code into C++, builds that into
 DLLs a Vita3K fork loads in place of its JIT, and holds the tools used to study
 the binaries and drive test runs. It is used, as a git submodule, by two game
-ports: ss-delta (Soul Sacrifice Delta) and shinobido-2 (Shinobido 2: Revenge
+ports: ss-delta (Soul Sacrifice Delta) and utakata (Shinobido 2: Revenge
 of Zen). The history comes from ss-delta, where it was written; comments that
 cite `docs/...` (decisions D6-D11, plan phases) refer to ss-delta's documents.
 
@@ -13,7 +13,7 @@ pkgs, licences (work.bin, .rif, zRIF), firmware, generated C++, screenshots,
 recordings or logs. Each game project keeps those in its own ignored
 directories and passes their paths in.
 
-**Licence:** not chosen yet (the owner's decision); there is no LICENSE file.
+**Licence:** MIT (LICENSE).
 
 ## Contents
 
