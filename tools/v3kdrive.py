@@ -330,8 +330,8 @@ def select_frontend(root, exe, title):
         if len(found) == 1:
             EXE = found[0]
         elif found:
-            print(f"several front ends in {root} ({', '.join(found)}): using {EXE}; choose one with --exe",
-                  file=sys.stderr)
+            # guessing starts the wrong game (whose missing install then shows a message box)
+            sys.exit(f"several front ends in {root} ({', '.join(found)}): choose one with --exe")
     known = {k.lower(): v for k, v in FRONTENDS.items()}
     WINDOW_TITLE = title if title is not None else known.get(EXE.lower(), "")
     IMAGES = ("Vita3K.exe", EXE)
