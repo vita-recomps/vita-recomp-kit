@@ -270,6 +270,58 @@ inline uint32_t half_to_single(uint16_t h) {
     return sign | (exp - 15 + 127) << 23 | frac << 13;
 }
 
+// single -> IEEE half bits (FPSCR.AHP = 0), rounded as FPSCR.RMode says. FPSCR.FZ flushes a
+// denormal single input to zero (half outputs are never flushed); FPSCR.DN turns a NaN into the
+// default NaN 0x7e00, otherwise a NaN keeps the top of its payload and becomes quiet.
+inline uint16_t single_to_half(uint32_t f, uint32_t fpscr) {
+    const uint32_t sign = (f >> 16) & 0x8000u;
+    const uint32_t exp = (f >> 23) & 0xffu, frac = f & 0x7fffffu;
+    if (exp == 0xff) {
+        if (!frac)
+            return uint16_t(sign | 0x7c00u);
+        if (fpscr & (1u << 25))
+            return 0x7e00u;
+        return uint16_t(sign | 0x7e00u | (frac >> 13));
+    }
+    if (exp == 0 && (frac == 0 || (fpscr & (1u << 24))))
+        return uint16_t(sign);
+    // value = m * 2^(e - 23); half units are 2^-24 (subnormal) or 2^(e2 - 10) (normal, e2 >= -14)
+    const int e = exp ? int(exp) - 127 : -126;
+    const uint64_t m = exp ? (frac | 0x800000u) : frac;
+    const int shift = e >= -14 ? 13 : 13 + (-14 - e); // bits of m below the half's last place
+    uint64_t q;
+    bool half, sticky;
+    if (shift >= 40) {
+        q = 0;
+        half = false;
+        sticky = m != 0;
+    } else {
+        q = m >> shift;
+        half = (m >> (shift - 1)) & 1;
+        sticky = (m & ((uint64_t(1) << (shift - 1)) - 1)) != 0;
+    }
+    const uint32_t rmode = (fpscr >> 22) & 3; // 0 nearest, 1 towards +inf, 2 towards -inf, 3 zero
+    bool up;
+    switch (rmode) {
+    case 0: up = half && (sticky || (q & 1)); break;
+    case 1: up = (half || sticky) && !sign; break;
+    case 2: up = (half || sticky) && sign; break;
+    default: up = false; break;
+    }
+    q += up;
+    // a normal result: exponent field e + 15 plus the mantissa without its hidden bit; a carry out
+    // of the mantissa (q = 0x800) moves into the exponent. A subnormal one is q itself, and q = 0x400
+    // becomes the smallest normal.
+    uint32_t r = e >= -14 ? uint32_t((e + 15) << 10) + uint32_t(q) - 0x400u : uint32_t(q);
+    if (r >= 0x7c00u) {
+        // overflow: infinity, or the largest finite value when rounding towards zero or away from
+        // this sign
+        const bool to_inf = rmode == 0 || (rmode == 1 && !sign) || (rmode == 2 && sign);
+        r = to_inf ? 0x7c00u : 0x7bffu;
+    }
+    return uint16_t(sign | r);
+}
+
 inline uint32_t ror32(uint32_t x, uint32_t n) {
     n &= 31;
     return n ? (x >> n) | (x << (32 - n)) : x;

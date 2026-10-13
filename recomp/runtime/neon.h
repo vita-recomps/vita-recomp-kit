@@ -526,6 +526,15 @@ struct FToU32 {
 };
 struct S32ToF { float operator()(int32_t a, bool &) const { return static_cast<float>(a); } };
 struct U32ToF { float operator()(uint32_t a, bool &) const { return static_cast<float>(a); } };
+// half <-> single precision (vcvt.f32.f16 / vcvt.f16.f32), on the bits, with NEON's standard FPSCR:
+// default NaN, flush-to-zero (of single inputs; half values are never flushed), round to nearest
+struct H2F {
+    uint32_t operator()(uint16_t h, bool &) const {
+        const uint32_t r = half_to_single(h);
+        return (r & 0x7f800000u) == 0x7f800000u && (r & 0x7fffffu) ? 0x7fc00000u : r;
+    }
+};
+struct F2H { uint16_t operator()(uint32_t f, bool &) const { return single_to_half(f, (1u << 25) | (1u << 24)); } };
 
 // reciprocal estimate (dynarmic FPRecipEstimate with FZ, DN, round to nearest)
 inline uint32_t recip_estimate_lut(uint32_t a) { // a in [256, 512): u1.8

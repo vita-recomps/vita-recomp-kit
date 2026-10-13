@@ -926,6 +926,15 @@ def vfp(cx, mnemonic):
         shift = 0 if base == 'vcvtb' else 16
         cx.emit(f'ctx->vfp.s[{n0}] = half_to_single(uint16_t(ctx->vfp.s[{n1}] >> {shift}));')
         return
+    if base in ('vcvtb', 'vcvtt') and types == ['f16', 'f32']:
+        # single s<m> -> half precision into the bottom (vcvtb) or top (vcvtt) half of s<d>; the
+        # other half of s<d> is kept
+        (_, n0), (_, n1) = vreg(cx, ops[0]), vreg(cx, ops[1])
+        if base == 'vcvtb':
+            cx.emit(f'ctx->vfp.s[{n0}] = (ctx->vfp.s[{n0}] & 0xffff0000u) | single_to_half(ctx->vfp.s[{n1}], ctx->fpscr);')
+        else:
+            cx.emit(f'ctx->vfp.s[{n0}] = (ctx->vfp.s[{n0}] & 0x0000ffffu) | (uint32_t(single_to_half(ctx->vfp.s[{n1}], ctx->fpscr)) << 16);')
+        return
     raise Unsupported(base)
 
 

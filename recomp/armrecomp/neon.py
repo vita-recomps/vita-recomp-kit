@@ -213,6 +213,14 @@ def translate(cx):
         n = nb // 4
         conv = {('f32', 's32'): ('int32_t', 'float', 'S32ToF'), ('f32', 'u32'): ('uint32_t', 'float', 'U32ToF'),
                 ('s32', 'f32'): ('float', 'int32_t', 'FToS32'), ('u32', 'f32'): ('float', 'uint32_t', 'FToU32')}
+        if (types[0], types[1]) == ('f32', 'f16'):
+            # 4 halves of d<m> -> 4 singles in q<d>
+            emit(f'map1<uint16_t, uint32_t, 4>(ctx, {d}, {m}, H2F{{}});')
+            return
+        if (types[0], types[1]) == ('f16', 'f32'):
+            # 4 singles of q<m> -> 4 halves in d<d>
+            emit(f'map1<uint32_t, uint16_t, 4>(ctx, {d}, {m}, F2H{{}});')
+            return
         if (types[0], types[1]) not in conv:
             raise Unsupported(f'vcvt.{".".join(types)}')
         src, dst, f = conv[(types[0], types[1])]
