@@ -33,6 +33,8 @@ directories and passes their paths in.
 | `tools/stackdump.py` | call stacks of every thread of a running process (hang diagnosis) |
 | `tools/mkzrif.py`, `tools/fetch-update.py` | a zRIF from a work.bin; a title's update pkg from Sony's server |
 | `tools/proccap/proccap.cpp`, `tools/wavstats.py` | records one process's audio to WAV; loudness and onsets over time |
+| `tools/build-vita3k.py` | builds a game project's `third_party/vita3k` with MSVC + Ninja into `build/vita3k` (`msvc.py` finds MSVC with vswhere) |
+| `tools/install-game.py`, `tools/make-dist.py` | from the player's dump (firmware, game, patch, add-ons; pkgs with their licence) to a playable folder `dist/<name>/`, as the game's `game.json` describes it (`gameproject.py`) |
 
 ## Tools
 
