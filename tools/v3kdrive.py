@@ -6,15 +6,23 @@ WM_KEYDOWN/WM_KEYUP posted to the game window instead, which Qt ignores while th
 is unfocused. Neither path takes keyboard focus. Screenshots use PrintWindow on the game
 window. FPS is sampled from the game window title ("... | 30 FPS (33 ms) | 960x544 | ...").
 
+A single-game front end of the fork (ss-delta.exe, shinobido2.exe, ...) is driven the same way;
+its game window title starts with the game's name ("Soul Sacrifice Delta | ... FPS ...").
+
 usage:
   python -I v3kdrive.py <vita3k dir> launch <TITLEID> [Vulkan|OpenGL]  start Vita3K and boot the app
-  python -I v3kdrive.py <vita3k dir> start                   start ss-delta.exe (settings: its ss-delta.ini)
+  python -I v3kdrive.py <vita3k dir> start                   start the front end (settings: its .ini)
   python -I v3kdrive.py <vita3k dir> run "<steps>" [fps.csv]  run steps against the open window
   python -I v3kdrive.py <vita3k dir> bootseq <TITLEID> <name>  set BootSequence in the installed config.ini
+                                                             (Soul Sacrifice Delta's debug boot)
   python -I v3kdrive.py <vita3k dir> title                   print the game window title
   python -I v3kdrive.py <vita3k dir> close                   close Vita3K
 
-  --player N (anywhere, ss-delta.exe): the copy of the game for Ad Hoc Play player N (2-4): start
+  --exe NAME (anywhere): the front end's executable. Without it: the one known front end
+  (FRONTENDS below) in <vita3k dir>, if there is exactly one; otherwise ss-delta.exe.
+  --title PREFIX (anywhere): the start of the front end's window title; by default the one
+  FRONTENDS lists for its executable (for an executable it does not list, any title).
+  --player N (anywhere, front end): the copy of the game for Ad Hoc Play player N (2-4): start
   passes it on, and the other commands use that copy's window and input pipe (v3kdrive<N>).
   Without it they use player 1's.
 
@@ -26,10 +34,10 @@ Steps (comma separated):
   hold:<button>:ms  hold for ms; several buttons/sticks with +, e.g. hold:ls_up+r:2000
   wait <ms>         sleep, sampling FPS every 500 ms
   shot:<path>       PNG of the game window (PrintWindow; no focus needed)
-  frame:<path>      PNG of the frame at render resolution (ss-delta.exe, through the input pipe)
-  touch:<x>:<y>:ms  hold a finger on the front touchscreen at (x, y) of 960x544 (ss-delta.exe)
+  frame:<path>      PNG of the frame at render resolution (front end, through the input pipe)
+  touch:<x>:<y>:ms  hold a finger on the front touchscreen at (x, y) of 960x544 (front end)
   tdown:<x>:<y>     put the finger down and keep it there; tup lifts it
-  record:<n>:<dir>  save the next n rendered frames into dir (ss-delta.exe); returns at once
+  record:<n>:<dir>  save the next n rendered frames into dir (front end); returns at once
   mark:<label>      label the following FPS samples in the CSV
 """
 import csv, ctypes, os, re, subprocess, sys, time
@@ -51,23 +59,30 @@ KEYS = {
     "f12": (0x7B, 0x58, False),
 }
 PIPE = r"\\.\pipe" + "\\"  # + v3kdrive, or v3kdrive<N> for player N
-PLAYER = 1  # --player N: Ad Hoc Play's copy N of ss-delta.exe (window "... (player N)")
+PLAYER = 1  # --player N: Ad Hoc Play's copy N of the front end (window "... (player N)")
 STICKS = {"ls_up": (1, -1.0), "ls_down": (1, 1.0), "ls_left": (0, -1.0), "ls_right": (0, 1.0),
           "rs_up": (3, -1.0), "rs_down": (3, 1.0), "rs_left": (2, -1.0), "rs_right": (2, 1.0)}
-IMAGES = ("Vita3K.exe", "ss-delta.exe")
+# single-game front ends of the fork: executable -> start of its window title
+FRONTENDS = {"ss-delta.exe": "Soul Sacrifice Delta", "shinobido2.exe": "Shinobido 2"}
+EXE = "ss-delta.exe"  # --exe, or the one front end in <vita3k dir>
+WINDOW_TITLE = FRONTENDS[EXE]  # --title
+IMAGES = ("Vita3K.exe", EXE)
+# a Vita3K game window shows the app's title ID, e.g. "(PCSA00152)", before its first FPS update
+TITLE_ID_RE = re.compile(r"\([A-Z]{4}\d{5}\)")
 TITLE_RE = re.compile(r"\| (?:\S+) \| (\d+) FPS \((\d+) ms\) \| (\d+)x(\d+)")
 
 
-def windows():
-    """(hwnd, title) for every visible top-level window owned by a Vita3K.exe or ss-delta.exe process."""
+def windows(with_image=False):
+    """(hwnd, title) for every visible top-level window owned by a Vita3K.exe or front-end process;
+    (hwnd, title, image) with with_image."""
     out = []
-    pids = set()
+    pids = {}
     for image in IMAGES:
         r = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {image}", "/FO", "CSV", "/NH"],
                            capture_output=True, text=True)
         for row in csv.reader(r.stdout.splitlines()):
             if len(row) > 1 and row[0].lower() == image.lower():
-                pids.add(int(row[1]))
+                pids[int(row[1])] = image
 
     @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
     def cb(hwnd, _):
@@ -77,15 +92,23 @@ def windows():
             n = user32.GetWindowTextLengthW(hwnd)
             buf = ctypes.create_unicode_buffer(n + 1)
             user32.GetWindowTextW(hwnd, buf, n + 1)
-            out.append((hwnd, buf.value))
+            out.append((hwnd, buf.value, pids[pid.value]) if with_image else (hwnd, buf.value))
         return True
     user32.EnumWindows(cb, 0)
     return out
 
 
+def is_game_window(title, image):
+    """a front end's window must carry its title; then Vita3K's and its own game windows show FPS
+    (or the title ID, before the first update)"""
+    if image.lower() == EXE.lower() and not title.startswith(WINDOW_TITLE):
+        return False
+    return "FPS" in title or bool(TITLE_ID_RE.search(title))
+
+
 def game_window():
-    for hwnd, title in windows():
-        if ("FPS" in title or "(PCSA" in title) and player_of(title) == PLAYER:
+    for hwnd, title, image in windows(with_image=True):
+        if is_game_window(title, image) and player_of(title) == PLAYER:
             return hwnd, title
     return None, None
 
@@ -214,26 +237,26 @@ class Pad:
         self.pipe.flush()
 
     def touch(self, x, y):
-        # ss-delta.exe holds a front-touch finger at (x, y) on the 960x544 screen; None lifts it
+        # the front end holds a front-touch finger at (x, y) on the 960x544 screen; None lifts it
         self.connect()
         if not self.pipe:
-            print("touch: needs the input pipe (ss-delta.exe)")
+            print(f"touch: needs the input pipe ({EXE})")
             return
         self.pipe.write("touch none\n" if x is None else f"touch {x} {y}\n")
         self.pipe.flush()
 
     def record(self, count, path):
-        # ss-delta.exe saves the next `count` rendered frames into the folder; returns at once
+        # the front end saves the next `count` rendered frames into the folder; returns at once
         self.connect()
         if self.pipe:
             self.pipe.write(f"record {count} {os.path.abspath(path)}\n")
             self.pipe.flush()
 
     def frame(self, path):
-        # ss-delta.exe saves the frame at render resolution on its next tick; give it a moment
+        # the front end saves the frame at render resolution on its next tick; give it a moment
         self.connect()
         if not self.pipe:
-            print("frame: needs the input pipe (ss-delta.exe)")
+            print(f"frame: needs the input pipe ({EXE})")
             return
         self.pipe.write("screenshot " + os.path.abspath(path) + "\n")
         self.pipe.flush()
@@ -287,13 +310,44 @@ def wait_for_window():
     print("no game window after 60 s; windows:", windows())
 
 
+def take_option(name):
+    """the value of option `name`, removed from sys.argv; None without it"""
+    if name not in sys.argv:
+        return None
+    i = sys.argv.index(name)
+    value = sys.argv[i + 1]
+    del sys.argv[i:i + 2]
+    return value
+
+
+def select_frontend(root, exe, title):
+    """EXE and WINDOW_TITLE: --exe/--title, else the one known front end in root, else ss-delta.exe"""
+    global EXE, WINDOW_TITLE, IMAGES
+    if exe:
+        EXE = exe if exe.lower().endswith(".exe") else exe + ".exe"
+    else:
+        found = [e for e in FRONTENDS if os.path.isfile(os.path.join(root, e))]
+        if len(found) == 1:
+            EXE = found[0]
+        elif found:
+            print(f"several front ends in {root} ({', '.join(found)}): using {EXE}; choose one with --exe",
+                  file=sys.stderr)
+    known = {k.lower(): v for k, v in FRONTENDS.items()}
+    WINDOW_TITLE = title if title is not None else known.get(EXE.lower(), "")
+    IMAGES = ("Vita3K.exe", EXE)
+
+
 def main():
     global PLAYER
-    if "--player" in sys.argv:
-        i = sys.argv.index("--player")
-        PLAYER = int(sys.argv[i + 1])
-        del sys.argv[i:i + 2]
+    player = take_option("--player")
+    if player:
+        PLAYER = int(player)
+    exe, title = take_option("--exe"), take_option("--title")
+    if len(sys.argv) < 3 or sys.argv[1] in ("-h", "--help"):
+        print(__doc__)
+        sys.exit(0 if sys.argv[1:2] in (["-h"], ["--help"]) else 2)
     root, cmd = sys.argv[1], sys.argv[2]
+    select_frontend(root, exe, title)
     if cmd == "launch":
         exe = os.path.join(root, "Vita3K.exe")
         backend = sys.argv[4] if len(sys.argv) > 4 else "Vulkan"
@@ -310,7 +364,7 @@ def main():
     elif cmd == "start":
         env = dict(os.environ, VITA3K_INPUT_PIPE=pipe_name())
         args = ["--player", str(PLAYER)] if PLAYER > 1 else []
-        subprocess.Popen([os.path.join(root, "ss-delta.exe")] + args, cwd=root, env=env,
+        subprocess.Popen([os.path.join(root, EXE)] + args, cwd=root, env=env,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         wait_for_window()
     elif cmd == "run":
@@ -335,7 +389,8 @@ def main():
         # force it after 8 s
         # while other players' copies run, only this copy's process is killed
         hwnd, _ = game_window()
-        others = [t for _, t in windows() if ("FPS" in t or "(PCSA" in t) and player_of(t) != PLAYER]
+        others = [t for _, t, image in windows(with_image=True)
+                  if is_game_window(t, image) and player_of(t) != PLAYER]
         if hwnd:
             pid = wintypes.DWORD()
             user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
