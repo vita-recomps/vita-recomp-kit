@@ -10,12 +10,14 @@ Everything it writes is derived from the player's dump and firmware: it stays lo
 usage:
   python -I install-game.py [--project DIR] --firmware PUP [PUP ...]
                             --install <zip|vpk|folder|pkg> [--license <work.bin|rif> | --zrif Z]
-                            [--install ...] [--name NAME] [--dump-seconds N] [--no-recompile]
+                            [--install ...] [--name NAME] [--dump-seconds N] [--no-recompile] [--no-jit]
 
   --install   repeat for each part, in order (the game, then its patch, then add-ons); a pkg's
               --license or --zrif follows it. A patch's or add-on's licence can be omitted when
               the game's licence covers it (installed before it).
   --no-recompile  stop after step 2: the folder runs everything on the JIT
+  --no-jit        package the front end built without dynarmic (build-vita3k.py --no-jit): native
+                  code only. The install and the ELF dump still use the JIT build.
 """
 import argparse
 import glob
@@ -51,6 +53,7 @@ def main():
     ap.add_argument('--name', default='')
     ap.add_argument('--dump-seconds', type=int, default=0)
     ap.add_argument('--no-recompile', action='store_true')
+    ap.add_argument('--no-jit', action='store_true')
     a = ap.parse_args(rest)
     if '--install' not in content:
         sys.exit('nothing to install: --install <game dump>')
@@ -132,6 +135,7 @@ def main():
     dist = [sys.executable, '-I', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'make-dist.py'),
             '--project', p.root, '--name', name]
     dist += ['--recompiled-dir', recompiled_dir] if not a.no_recompile and p.modules else ['--no-recompiled']
+    dist += ['--no-jit'] if a.no_jit else []
     sys.exit(subprocess.run(dist).returncode)
 
 
