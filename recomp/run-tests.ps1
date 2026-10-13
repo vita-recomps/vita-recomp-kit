@@ -8,8 +8,8 @@
 #   -Vita3kSrc <Root>\third_party\vita3k  -Vita3kBuild <Root>\build\vita3k
 #   -DevShell <Root>\tools\devshell.ps1 (when it exists)
 # Without -Root, this repository's directory (the layout when recomp\ sat inside the game project)
-# or its parent (a submodule) is used when it has extracted\elf\; otherwise -Root, or every path,
-# must be given.
+# or the game project around it (as a submodule, third_party\recomp) is used when it has
+# extracted\elf\; otherwise -Root, or every path, must be given.
 param(
     [string[]]$Modules = @('eboot', 'libc', 'libfios2', 'libult'),
     [int]$PerForm = 20,
