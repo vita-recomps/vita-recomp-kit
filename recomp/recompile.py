@@ -62,6 +62,9 @@ class Output(io.StringIO):
 
 def main():
     args = sys.argv[1:]
+    if len(args) < 2 or args[0] in ('-h', '--help'):
+        print(__doc__.strip())
+        sys.exit(0 if args[:1] in (['-h'], ['--help']) else 2)
     elf, out = args[0], args[1]
     bucket_bytes = 64 * 1024
     only = None

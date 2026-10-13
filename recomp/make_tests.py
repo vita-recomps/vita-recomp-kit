@@ -78,6 +78,9 @@ def function_tests(mod, out, count):
 
 
 def main():
+    if len(sys.argv) < 3 or sys.argv[1] in ('-h', '--help'):
+        print(__doc__.strip())
+        sys.exit(0 if sys.argv[1:2] in (['-h'], ['--help']) else 2)
     elf, out = sys.argv[1], sys.argv[2]
     per_form = int(sys.argv[sys.argv.index('--per-form') + 1]) if '--per-form' in sys.argv else 20
     functions = int(sys.argv[sys.argv.index('--functions') + 1]) if '--functions' in sys.argv else 300
