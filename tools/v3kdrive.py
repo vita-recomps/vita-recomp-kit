@@ -38,6 +38,7 @@ Steps (comma separated):
   touch:<x>:<y>:ms  hold a finger on the front touchscreen at (x, y) of 960x544 (front end)
   tdown:<x>:<y>     put the finger down and keep it there; tup lifts it
   record:<n>:<dir>  save the next n rendered frames into dir (front end); returns at once
+  memdump:<addr>:<size>:<path>  write guest memory (hex address and size) to path (front end)
   mark:<label>      label the following FPS samples in the CSV
 """
 import csv, ctypes, os, re, subprocess, sys, time
@@ -252,6 +253,16 @@ class Pad:
             self.pipe.write(f"record {count} {os.path.abspath(path)}\n")
             self.pipe.flush()
 
+    def memdump(self, address, size, path):
+        # the front end writes guest memory to the file on its next tick; give it a moment
+        self.connect()
+        if not self.pipe:
+            print(f"memdump: needs the input pipe ({EXE})")
+            return
+        self.pipe.write(f"memdump {address:x} {size:x} {os.path.abspath(path)}\n")
+        self.pipe.flush()
+        time.sleep(0.3)
+
     def frame(self, path):
         # the front end saves the frame at render resolution on its next tick; give it a moment
         self.connect()
@@ -276,6 +287,9 @@ def run(steps, fps_csv):
             capture(hwnd, step[5:])
         elif step.startswith("frame:"):
             pad.frame(step[6:])
+        elif step.startswith("memdump:"):
+            _, address, size, path = step.split(":", 3)
+            pad.memdump(int(address, 16), int(size, 16), path)
         elif step.startswith("record:"):
             _, n, path = step.split(":", 2)
             pad.record(int(n), path)
