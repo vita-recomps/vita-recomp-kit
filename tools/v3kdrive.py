@@ -39,6 +39,7 @@ Steps (comma separated):
   tdown:<x>:<y>     put the finger down and keep it there; tup lifts it
   record:<n>:<dir>  save the next n rendered frames into dir (front end); returns at once
   memdump:<addr>:<size>:<path>  write guest memory (hex address and size) to path (front end)
+  menu              open or close the front end's settings menu
   mark:<label>      label the following FPS samples in the CSV
 """
 import csv, ctypes, os, re, subprocess, sys, time
@@ -253,6 +254,16 @@ class Pad:
             self.pipe.write(f"record {count} {os.path.abspath(path)}\n")
             self.pipe.flush()
 
+    def command(self, line):
+        # a line for the front end's input pipe as it is (menu)
+        self.connect()
+        if not self.pipe:
+            print(f"{line}: needs the input pipe ({EXE})")
+            return
+        self.pipe.write(line + "\n")
+        self.pipe.flush()
+        time.sleep(0.3)
+
     def memdump(self, address, size, path):
         # the front end writes guest memory to the file on its next tick; give it a moment
         self.connect()
@@ -287,6 +298,8 @@ def run(steps, fps_csv):
             capture(hwnd, step[5:])
         elif step.startswith("frame:"):
             pad.frame(step[6:])
+        elif step == "menu":
+            pad.command("menu")
         elif step.startswith("memdump:"):
             _, address, size, path = step.split(":", 3)
             pad.memdump(int(address, 16), int(size, 16), path)
