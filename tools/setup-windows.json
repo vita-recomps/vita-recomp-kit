@@ -13,6 +13,12 @@
    "size": 11133606
   },
   {
+   "kind": "tcltk",
+   "url": "https://www.python.org/ftp/python/3.12.10/amd64/tcltk.msi",
+   "sha256": "55c96ffad69b1c834aa52e11b9ce41637a178ba6ad6607e83956044834276e2a",
+   "size": 3584000
+  },
+  {
    "kind": "wheel",
    "url": "https://files.pythonhosted.org/packages/70/39/2138d890a8e827636b9de9924fbc8527fe83e38b6d26605b30ac55e30ebe/capstone-5.0.7-py3-none-win_amd64.whl",
    "sha256": "4ab8bcb7da8f221ff45926ca168ca33e76f7237d06fbf3c10780002faa2670e1",

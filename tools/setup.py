@@ -3,7 +3,8 @@ the game to a playable folder. It downloads the PS Vita firmware from Sony and a
 recompiled modules from LLVM's and Microsoft's servers, installs the game, recompiles its code and
 compiles it on this PC. Nothing of the game is ever uploaded or shared.
 
-usage (no arguments: it asks):
+usage (no arguments: a window asks, setupgui.py; --console: questions in the console):
+  setup.bat [--console]
   setup.bat [--install <pkg|folder|zip|vpk> [--license <work.bin|rif> | --zrif Z]] ...
             [--out DIR] [--cache DIR] [--accept-microsoft-license] [--jobs N]
 
@@ -55,6 +56,15 @@ def main():
     argv = sys.argv[1:]
     with open(os.path.join(GAME, 'game.json'), encoding='utf-8') as f:
         game = json.load(f)
+    default_out = os.path.join(os.path.dirname(SETUP), game['id'])
+    if not argv:
+        import setupgui
+        with open(os.path.join(TOOLS, 'toolchain-windows.json'), encoding='utf-8') as f:
+            licence = json.load(f)['microsoft_license']
+        setupgui.Window(game, os.path.abspath(__file__), default_out, licence).run()
+        return
+    if argv == ['--console']:
+        argv = []
     parts, rest, i = [], [], 0
     while i < len(argv):
         if argv[i] in ('--install', '--license', '--zrif') and i + 1 < len(argv):
@@ -79,8 +89,7 @@ def main():
     print(f'{game["name"]}: setup')
     if interactive:
         parts = ask_parts(game)
-    out = opts.get('--out') or (ask('\nPlayable folder', os.path.join(os.path.dirname(SETUP), game['id']))
-                                if interactive else os.path.join(os.path.dirname(SETUP), game['id']))
+    out = opts.get('--out') or (ask('\nPlayable folder', default_out) if interactive else default_out)
     cache = opts.get('--cache') or os.path.join(os.environ.get('LOCALAPPDATA', SETUP), 'vita-recomps')
     jobs = opts.get('--jobs') or str(max(1, min(os.cpu_count() or 4, 6)))
 

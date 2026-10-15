@@ -2,8 +2,9 @@
 playable port without Git, Visual Studio or a Python install (docs D9 of the game projects). It holds:
 
   setup.bat               runs python\\python.exe -I -u kit\\tools\\setup.py
-  python\\                 Python's embeddable distribution with capstone and PyYAML (versions pinned:
-                          the recompiler's output depends on capstone's)
+  python\\                 Python's embeddable distribution with Tk (python.org's tcltk.msi, for the
+                          setup's window), capstone and PyYAML (versions pinned: the recompiler's
+                          output depends on capstone's)
   kit\\recomp, kit\\tools   this kit's recompiler and tools
   game\\                   the game's front end (a VITA3K_GAMES_ONLY build), Vita3K's data, game.json
                           and the README of the playable folder
@@ -21,6 +22,8 @@ import json
 import os
 import re
 import shutil
+import subprocess
+import tempfile
 import sys
 import urllib.request
 import zipfile
@@ -62,6 +65,11 @@ def resolve(lock_path, cache):
     local = os.path.join(cache, os.path.basename(url))
     get(url, local)
     files.append({'kind': 'python', 'url': url, 'sha256': sha256(local), 'size': os.path.getsize(local)})
+    # Tk, which the embeddable distribution leaves out: the Windows installer's own component
+    url = f'https://www.python.org/ftp/python/{PYTHON}/amd64/tcltk.msi'
+    local = os.path.join(cache, os.path.basename(url))
+    get(url, local)
+    files.append({'kind': 'tcltk', 'url': url, 'sha256': sha256(local), 'size': os.path.getsize(local)})
     tag = 'cp' + ''.join(PYTHON.split('.')[:2])
     for name, version in WHEELS.items():
         release = json.loads(get(f'https://pypi.org/pypi/{name}/{version}/json'))
@@ -108,7 +116,7 @@ def build(a):
     if os.path.exists(out):
         shutil.rmtree(out)
     os.makedirs(out)
-    paths = fetch(lock, os.path.join(p.root, 'build', 'setup-downloads'))
+    paths = fetch(lock, os.path.join(os.path.dirname(out), 'setup-downloads'))  # beside the setup
 
     # Python, embeddable, with the wheels in Lib/site-packages; its ._pth file is the whole sys.path
     py = os.path.join(out, 'python')
@@ -121,7 +129,20 @@ def build(a):
     pth = glob.glob(os.path.join(py, 'python*._pth'))[0]
     zipname = os.path.basename(pth)[:-5] + '.zip'
     with open(pth, 'w', encoding='ascii', newline='\r\n') as f:
-        f.write(f'{zipname}\n.\nLib\\site-packages\n')
+        f.write(f'{zipname}\n.\nLib\nLib\\site-packages\n')
+    # Tk: an administrative install of the MSI (no elevation), then only what tkinter loads
+    with tempfile.TemporaryDirectory() as tmp:
+        r = subprocess.run(['msiexec.exe', '/a', paths['tcltk'][0], '/qn', f'TARGETDIR={tmp}\\tk'])
+        if r.returncode:
+            sys.exit(f'unpacking tcltk.msi failed ({r.returncode})')
+        tk = os.path.join(tmp, 'tk')
+        for f in os.listdir(os.path.join(tk, 'DLLs')):
+            shutil.copy2(os.path.join(tk, 'DLLs', f), py)
+        shutil.copytree(os.path.join(tk, 'Lib', 'tkinter'), os.path.join(py, 'Lib', 'tkinter'),
+                        ignore=shutil.ignore_patterns('test', '__pycache__'))
+        for d in ('tcl8', 'tcl8.6', 'tk8.6'):
+            shutil.copytree(os.path.join(tk, 'tcl', d), os.path.join(py, 'tcl', d),
+                            ignore=shutil.ignore_patterns('demos', 'images', 'tzdata'))
 
     # the kit: recompiler and tools
     copy_tree(os.path.join(KIT, 'recomp'), os.path.join(out, 'kit', 'recomp'))
@@ -149,8 +170,10 @@ def build(a):
         shutil.copy2(os.path.join(p.root, p.dist_readme), os.path.join(game, p.dist_readme))
 
     with open(os.path.join(out, 'setup.bat'), 'w', encoding='ascii', newline='\r\n') as f:
-        f.write('@echo off\n"%~dp0python\\python.exe" -I -u "%~dp0kit\\tools\\setup.py" %*\n'
-                'if not "%1"=="" exit /b %errorlevel%\npause\n')
+        # no arguments: the window, without a console; otherwise the console setup
+        f.write('@echo off\nif "%~1"=="" (\n  start "" "%~dp0python\\pythonw.exe" -I "%~dp0kit\\tools\\setup.py"\n'
+                '  exit /b 0\n)\n"%~dp0python\\python.exe" -I -u "%~dp0kit\\tools\\setup.py" %*\n'
+                'set rc=%errorlevel%\nif "%~1"=="--console" pause\nexit /b %rc%\n')
 
     # release check: nothing that looks like game or firmware data
     bad = [os.path.relpath(os.path.join(d, f), out) for d, _, fs in os.walk(out) for f in fs
