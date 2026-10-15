@@ -135,7 +135,12 @@ With arguments (taken as `install-game.py` takes them), or with
    recompiles them and compiles them with the toolchain (`install-game.py
    --bin --toolchain --out`);
 3. lays out the playable folder with the VC++ runtime DLLs beside the
-   executable.
+   executable (by default `<game id>` next to the setup's folder) and, if
+   asked, puts a shortcut to it on the desktop.
+
+The game's front end sits in the setup's `kit\game\` as the template the
+playable folder is made from, out of sight. On its own it has no game
+installed, so it isn't meant to be started.
 
 `make-setup.py` refuses to write a setup that holds anything that looks
 like game data (ELFs, pkgs, PUPs, licences, recompiled modules, saves,

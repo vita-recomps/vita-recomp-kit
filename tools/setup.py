@@ -6,11 +6,12 @@ compiles it on this PC. Nothing of the game is ever uploaded or shared.
 usage (no arguments: a window asks, setupgui.py; --console: questions in the console):
   setup.bat [--console]
   setup.bat [--install <pkg|folder|zip|vpk> [--license <work.bin|rif> | --zrif Z]] ...
-            [--out DIR] [--cache DIR] [--accept-microsoft-license] [--jobs N]
+            [--out DIR] [--cache DIR] [--accept-microsoft-license] [--jobs N] [--shortcut]
 
   --install   repeat for each part, in order: the game, then its update, then add-ons
   --out       the playable folder (default: <game id> next to the setup)
   --cache     the downloads, shared by every game's setup (default %LOCALAPPDATA%\\vita-recomps)
+  --shortcut  put a shortcut to the game on the desktop
 """
 import json
 import os
@@ -22,7 +23,20 @@ sys.path.insert(0, TOOLS)
 import toolchain  # noqa: E402
 
 SETUP = os.path.dirname(os.path.dirname(TOOLS))
-GAME = os.path.join(SETUP, 'game')
+GAME = os.path.join(SETUP, 'kit', 'game')  # the template the playable folder is made from
+
+
+def desktop_shortcut(exe, name):
+    """A shortcut to exe on the player's desktop (OneDrive's too); its path."""
+    env = dict(os.environ, SHORTCUT_TARGET=exe, SHORTCUT_NAME=name)
+    script = ("$d = [Environment]::GetFolderPath('Desktop'); "
+              "$l = Join-Path $d ($env:SHORTCUT_NAME + '.lnk'); "
+              "$s = (New-Object -ComObject WScript.Shell).CreateShortcut($l); "
+              "$s.TargetPath = $env:SHORTCUT_TARGET; "
+              "$s.WorkingDirectory = Split-Path $env:SHORTCUT_TARGET; $s.Save(); $l")
+    r = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script], env=env,
+                       capture_output=True, text=True, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    return r.stdout.strip() if r.returncode == 0 else ''
 
 
 def ask(prompt, default=''):
@@ -79,7 +93,7 @@ def main():
         if rest[j] in ('--out', '--cache', '--jobs') and j + 1 < len(rest):
             opts[rest[j]] = rest[j + 1]
             j += 2
-        elif rest[j] == '--accept-microsoft-license':
+        elif rest[j] in ('--accept-microsoft-license', '--shortcut'):
             opts[rest[j]] = True
             j += 1
         else:
@@ -121,7 +135,11 @@ def main():
     if r.returncode:
         sys.exit('the setup failed (see above)')
 
-    print(f'\n3/3 done: start {os.path.join(out, game["id"] + ".exe")}')
+    exe = os.path.join(out, game['id'] + '.exe')
+    if opts.get('--shortcut'):
+        lnk = desktop_shortcut(exe, game['name'])
+        print(f'desktop shortcut: {lnk}' if lnk else 'the desktop shortcut could not be made')
+    print(f'\n3/3 done: the game is in {out}. Start {exe}')
 
 
 if __name__ == '__main__':

@@ -88,6 +88,7 @@ class Window:
         self.proc = None
         self.out = tk.StringVar(value=default_out)
         self.accepted = tk.BooleanVar()
+        self.shortcut = tk.BooleanVar(value=True)
         self.stage = tk.StringVar(value='')
         self.extra_args = []  # more setup.py arguments (tests: --cache)
 
@@ -129,6 +130,8 @@ class Window:
         link = ttk.Label(lic, text='(read it)', foreground='blue', cursor='hand2')
         link.grid(row=0, column=1, padx=4)
         link.bind('<Button-1>', lambda e: webbrowser.open(licence_url))
+        ttk.Checkbutton(f, variable=self.shortcut, text='Put a shortcut to the game on the desktop').grid(
+            sticky='w', pady=(4, 0))
 
         buttons = ttk.Frame(f)
         buttons.grid(sticky='ew', pady=(12, 0))
@@ -139,7 +142,7 @@ class Window:
         self.open = ttk.Button(buttons, text='Open folder', command=self.open_folder, state='disabled')
         self.open.grid(row=0, column=2)
 
-        ttk.Label(f, textvariable=self.stage, font=('Segoe UI', 10, 'bold')).grid(sticky='w', pady=(12, 2))
+        ttk.Label(f, textvariable=self.stage, font=('Segoe UI', 10, 'bold'), wraplength=720, justify='left').grid(sticky='w', pady=(12, 2))
         self.bar = ttk.Progressbar(f, mode='determinate', maximum=len(STAGES) - 1)
         self.bar.grid(sticky='ew')
         log = ttk.Frame(f)
@@ -195,6 +198,8 @@ class Window:
         args = [a for p in parts for a in p.args()]
         cmd = [os.path.join(os.path.dirname(sys.executable), 'python.exe'), '-I', '-u', self.setup_py,
                *args, '--out', out, '--accept-microsoft-license', *self.extra_args]
+        if self.shortcut.get():
+            cmd.append('--shortcut')
         self.install['state'] = 'disabled'
         self.bar['value'] = 0
         self.stage.set(STAGES[0][1])
@@ -231,7 +236,8 @@ class Window:
         self.install['state'] = 'normal'
         if code == 0:
             self.bar['value'] = self.bar['maximum']
-            self.stage.set(f'Done: {self.game["name"]} is ready to play.')
+            self.stage.set(f'Done. The game is in {self.out.get().strip()}: play it from there, with Play, '
+                           'or from the desktop shortcut. Don\'t start the exe inside the setup\'s own folder.')
             self.play['state'] = 'normal'
             self.open['state'] = 'normal'
         else:

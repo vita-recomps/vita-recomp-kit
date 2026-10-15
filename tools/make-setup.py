@@ -2,12 +2,14 @@
 playable port without Git, Visual Studio or a Python install (docs D9 of the game projects). It holds:
 
   setup.bat               runs python\\python.exe -I -u kit\\tools\\setup.py
+  README.txt              what the setup does, and where the game ends up
   python\\                 Python's embeddable distribution with Tk (python.org's tcltk.msi, for the
                           setup's window), capstone and PyYAML (versions pinned: the recompiler's
                           output depends on capstone's)
   kit\\recomp, kit\\tools   this kit's recompiler and tools
-  game\\                   the game's front end (a VITA3K_GAMES_ONLY build), Vita3K's data, game.json
-                          and the README of the playable folder
+  kit\\game\\              the game's front end (a VITA3K_GAMES_ONLY build), Vita3K's data, game.json
+                          and the README of the playable folder: the template the setup installs
+                          from, kept out of sight so no one starts its exe
 
 Nothing derived from a game or the firmware goes in: release checks refuse such files.
 
@@ -195,7 +197,7 @@ def build(a):
     shutil.copy2(os.path.join(KIT, 'LICENSE'), os.path.join(out, 'kit', 'LICENSE'))
 
     # the game's front end and its description
-    game = os.path.join(out, 'game')
+    game = os.path.join(out, 'kit', 'game')
     os.makedirs(game)
     bin_dir = os.path.abspath(a.bin)
     if not os.path.exists(os.path.join(bin_dir, p.id + '.exe')):
@@ -211,6 +213,14 @@ def build(a):
     if p.dist_readme:
         os.makedirs(os.path.dirname(os.path.join(game, p.dist_readme)), exist_ok=True)
         shutil.copy2(os.path.join(p.root, p.dist_readme), os.path.join(game, p.dist_readme))
+
+    with open(os.path.join(out, 'README.txt'), 'w', encoding='utf-8', newline='\r\n') as f:
+        f.write(f'{p.name}: setup\n\n'
+                'Run setup.bat. It asks for your own dump of the game, downloads the PS Vita firmware from\n'
+                'Sony and a compiler, and builds the game into the folder you choose (by default\n'
+                f'"{p.id}" next to this setup\'s folder). Play from that folder, or from the desktop\n'
+                'shortcut the setup can make. Nothing in this folder is the game itself: once the setup\n'
+                'has finished, this folder can be deleted.\n')
 
     with open(os.path.join(out, 'setup.bat'), 'w', encoding='ascii', newline='\r\n') as f:
         # no arguments: the window, without a console; otherwise the console setup
