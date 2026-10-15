@@ -11,16 +11,17 @@ usage:
                                                    download, check and unpack the toolchain into <dir>
   python -I toolchain.py env <dir>                 the INCLUDE, LIB and tool paths for a build, as JSON
 
-<dir> then holds llvm/bin/{clang-cl,lld-link,llvm-lib}.exe, msvc/{include,lib/x64} and
-sdk/{Include,Lib}/<version>/. build-recomp.py --toolchain <dir> builds the recompiled modules with it.
+<dir> then holds llvm/bin/{clang-cl,lld-link,llvm-lib}.exe, msvc/{include,lib/x64},
+sdk/{Include,Lib}/<version>/ and redist/ (the VC++ runtime DLLs a game's folder carries, as Microsoft
+allows for an application's own folder). build-recomp.py --toolchain <dir> builds the recompiled modules with it.
 """
-import hashlib, json, os, re, shutil, subprocess, sys, tempfile, urllib.request, zipfile
+import concurrent.futures, glob, hashlib, json, os, re, shutil, subprocess, sys, tempfile, urllib.request, zipfile
 
 CHANNEL = 'https://aka.ms/vs/17/release/channel'
 MICROSOFT_LICENSE = 'https://go.microsoft.com/fwlink/?LinkId=2179911'  # Visual Studio Build Tools
 LLVM_MINGW_API = 'https://api.github.com/repos/mstorsjo/llvm-mingw/releases/latest'
 # the MSVC runtime packages (VSIX) and the Windows SDK installers (MSI, with their cabinets)
-CRT_PACKAGES = ['CRT.Headers.base', 'CRT.x64.Desktop.base', 'CRT.x64.Store.base']
+CRT_PACKAGES = ['CRT.Headers.base', 'CRT.x64.Desktop.base', 'CRT.x64.Store.base', 'CRT.Redist.X64.base']
 SDK_MSIS = [
     'Windows SDK for Windows Store Apps Headers-x86_en-us.msi',
     'Windows SDK for Windows Store Apps Headers OnecoreUap-x86_en-us.msi',
@@ -30,6 +31,15 @@ SDK_MSIS = [
     'Windows SDK Desktop Libs x64-x86_en-us.msi',
     'Universal CRT Headers Libraries and Sources-x86_en-us.msi',
 ]
+RECOMP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'recomp')
+RUNTIME = os.path.join(RECOMP, 'runtime')
+DLL_PREFIX = 'ssd_aot_'  # the name the Vita3K fork loads (RECOMP_DLL_PREFIX in recomp/CMakeLists.txt)
+# recomp/CMakeLists.txt's Release flags, as clang-cl takes them
+CXXFLAGS = ['/nologo', '/TP', '/DWIN32', '/D_WINDOWS', '/EHsc', '/O2', '/Ob2', '/DNDEBUG', '/std:c++20', '/MD',
+            '--target=x86_64-pc-windows-msvc']
+GEN_FLAGS = ['/bigobj', '/O1', '/w', '/DRECOMP_COUNT_INSNS']
+SYSTEM_LIBS = ['kernel32.lib', 'user32.lib', 'gdi32.lib', 'winspool.lib', 'shell32.lib', 'ole32.lib',
+               'oleaut32.lib', 'uuid.lib', 'comdlg32.lib', 'advapi32.lib']
 # what a build needs from llvm-mingw: the real compiler (bin/clang.exe there is a wrapper that reads a
 # MinGW target from its name), the linker, the librarian, the DLLs they load and clang's headers
 LLVM_KEEP = re.compile(r'^[^/]+/(bin/(clang-\d+|ld\.lld|llvm-ar)\.exe|bin/[^/]+\.dll|lib/clang/\d+/include/.+)$')
@@ -127,12 +137,20 @@ def fetch(lock_path, dest, accepted):
 
     # the MSVC runtime: VSIX archives (zip), Contents/VC/Tools/MSVC/<version>/{include,lib/x64}
     msvc_dir = os.path.join(dest, 'msvc')
+    redist_dir = os.path.join(dest, 'redist')
     shutil.rmtree(msvc_dir, ignore_errors=True)
+    shutil.rmtree(redist_dir, ignore_errors=True)
     for p in lock['payloads']:
         if p['kind'] != 'vsix':
             continue
         with zipfile.ZipFile(os.path.join(cache, p['file'])) as z:
             for name in z.namelist():
+                r = re.match(r'Contents/VC/Redist/MSVC/[^/]+/x64/Microsoft\.VC\d+\.CRT/([^/]+\.dll)$', name)
+                if r:
+                    os.makedirs(redist_dir, exist_ok=True)
+                    with z.open(name) as src, open(os.path.join(redist_dir, r.group(1)), 'wb') as dst:
+                        shutil.copyfileobj(src, dst)
+                    continue
                 m = re.match(r'Contents/VC/Tools/MSVC/[^/]+/((include|lib/x64)/.+)$', name.replace('%20', ' '))
                 # x64 desktop only: no store/uwp/enclave/onecore variants, no debug symbols
                 if m and not name.endswith('/') and not name.endswith('.pdb')                         and not re.match(r'lib/x64/[^/]+/', m.group(1)):
@@ -198,6 +216,63 @@ def environment(dest):
         'lib': os.path.join(bin_dir, 'llvm-lib.exe'),
         'path': bin_dir,
     }
+
+
+def run(cmd, env, rsp=None):
+    """Run a tool, its arguments in a response file when they are many; return its output if it failed."""
+    if rsp:
+        with open(rsp, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(f'"{a}"' if ' ' in a else a for a in cmd[1:]))
+        cmd = [cmd[0], '@' + rsp]
+    r = subprocess.run(cmd, env=env, capture_output=True, text=True, errors='replace')
+    return (r.stdout + r.stderr).strip() if r.returncode else None
+
+
+def build_modules(gen, modules, build, toolchain_dir, jobs=4):
+    """Compile generated/<module>/ into <build>/ssd_aot_<module>.dll with the toolchain in toolchain_dir."""
+    tc = environment(toolchain_dir)
+    env = dict(os.environ, INCLUDE=tc['INCLUDE'], LIB=tc['LIB'])
+    env['PATH'] = tc['path'] + os.pathsep + env.get('PATH', '')
+    headers = max(os.path.getmtime(h) for h in glob.glob(os.path.join(RUNTIME, '*.h')))
+
+    # compile: every generated file whose object is older than it or than the headers
+    work = []
+    for m in modules:
+        obj_dir = os.path.join(build, 'obj', m)
+        os.makedirs(obj_dir, exist_ok=True)
+        newest = max(headers, *(os.path.getmtime(h) for h in glob.glob(os.path.join(gen, m, '*.h'))))
+        for src in sorted(glob.glob(os.path.join(gen, m, '*.cpp'))):
+            obj = os.path.join(obj_dir, os.path.basename(src)[:-4] + '.obj')
+            if not os.path.exists(obj) or os.path.getmtime(obj) < max(newest, os.path.getmtime(src)):
+                work.append([tc['cl'], *CXXFLAGS, *GEN_FLAGS, '/I', RUNTIME, '/I', os.path.join(gen, m),
+                             '/c', src, '/Fo' + obj])
+    entry = os.path.join(build, 'obj', 'aot_dll.obj')
+    if not os.path.exists(entry) or os.path.getmtime(entry) < max(headers, os.path.getmtime(os.path.join(RUNTIME, 'aot_dll.cpp'))):
+        work.append([tc['cl'], *CXXFLAGS, '/I', RUNTIME, '/c', os.path.join(RUNTIME, 'aot_dll.cpp'), '/Fo' + entry])
+    print(f'{len(work)} files to compile')
+    done = 0
+    with concurrent.futures.ThreadPoolExecutor(jobs) as pool:
+        for cmd, err in zip(work, pool.map(lambda c: run(c, env), work)):
+            done += 1
+            if err is not None:
+                pool.shutdown(cancel_futures=True)
+                sys.exit(f'{cmd[-2]}: compile failed\n{err}')
+            if done % 25 == 0 or done == len(work):
+                print(f'  {done}/{len(work)}', flush=True)
+
+    # archive and link, as the CMake build does: gen_<module>.lib, then the DLL around aot_dll.obj
+    for m in modules:
+        objs = sorted(glob.glob(os.path.join(build, 'obj', m, '*.obj')))
+        lib = os.path.join(build, f'gen_{m}.lib')
+        dll = os.path.join(build, f'{DLL_PREFIX}{m}.dll')
+        if os.path.exists(dll) and os.path.getmtime(dll) >= max(os.path.getmtime(o) for o in objs + [entry]):
+            continue
+        err = run([tc['lib'], '/nologo', '/out:' + lib, *objs], env, os.path.join(build, f'gen_{m}.rsp'))
+        if err is None:
+            err = run([tc['link'], '/nologo', '/dll', '/machine:x64', '/INCREMENTAL:NO', '/out:' + dll,
+                       '/implib:' + os.path.join(build, f'{DLL_PREFIX}{m}.lib'), entry, lib, *SYSTEM_LIBS], env)
+        if err is not None:
+            sys.exit(f'{m}: linking failed\n{err}')
 
 
 def main():

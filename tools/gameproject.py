@@ -40,8 +40,9 @@ class Project:
     def bin_dir(self, no_jit=False, config='RelWithDebInfo'):
         return os.path.join(self.root, 'build', 'vita3k-nojit' if no_jit else 'vita3k', 'bin', config)
 
-    def exe(self, no_jit=False):
-        path = os.path.join(self.bin_dir(no_jit), self.id + '.exe')
+    def exe(self, no_jit=False, bin_dir=None):
+        """The front end: built in the project (build-vita3k.py), or in bin_dir (a prebuilt release)."""
+        path = os.path.join(bin_dir or self.bin_dir(no_jit), self.id + '.exe')
         if not os.path.exists(path):
-            sys.exit(f'build {self.id}.exe first (tools/build-vita3k.py --project {self.root})')
-        return path
+            sys.exit(f'no {path}: build {self.id}.exe first (tools/build-vita3k.py --project {self.root})')
+        return os.path.abspath(path)

@@ -34,10 +34,12 @@ directories and passes their paths in.
 | `tools/mkzrif.py`, `tools/fetch-update.py` | a zRIF from a work.bin; a title's update pkg from Sony's server |
 | `tools/proccap/proccap.cpp`, `tools/wavstats.py` | records one process's audio to WAV; loudness and onsets over time |
 | `tools/leak-scan.py` | pre-push hook (`install <repo>`) or `check <range>`: blocks game-data files, big files, licence strings, tokens, user folders and the owner's private patterns (`git config leakscan.patterns <file>`, kept outside the repo) from reaching a remote |
-| `tools/build-vita3k.py` | builds a game project's `third_party/vita3k` with MSVC + Ninja into `build/vita3k` (`msvc.py` finds MSVC with vswhere) |
+| `tools/build-vita3k.py` | builds a game project's `third_party/vita3k` with MSVC + Ninja into `build/vita3k` (`msvc.py` finds MSVC with vswhere); `--games-only`: the single-game executables without Vita3K's Qt interface (no Qt needed) |
 | `tools/build-recomp.py` | builds a game project's `generated/<module>/` into `ssd_aot_<module>.dll`: MSVC + CMake + Ninja, or `--toolchain <dir>` without any of them |
-| `tools/toolchain.py`, `tools/toolchain-windows.json` | a compiler for the modules that needs no Visual Studio: llvm-mingw's clang-cl and lld-link with Microsoft's C++ runtime and Windows SDK downloaded from Microsoft's Visual Studio manifest, every file pinned by SHA-256 in the lock file |
-| `tools/install-game.py`, `tools/make-dist.py` | from the player's dump (firmware, game, patch, add-ons; pkgs with their licence) to a playable folder `dist/<name>/`, as the game's `game.json` describes it (`gameproject.py`) |
+| `tools/toolchain.py`, `tools/toolchain-windows.json` | a compiler for the modules that needs no Visual Studio: llvm-mingw's clang-cl and lld-link with Microsoft's C++ runtime and Windows SDK downloaded from Microsoft's Visual Studio manifest, every file pinned by SHA-256 in the lock file; also the VC++ runtime DLLs a playable folder carries |
+| `tools/install-game.py`, `tools/make-dist.py` | from the player's dump (firmware, game, patch, add-ons; pkgs with their licence) to a playable folder `dist/<name>/`, as the game's `game.json` describes it (`gameproject.py`); `--bin`, `--toolchain`, `--out` for a prebuilt front end, the downloaded toolchain and any folder |
+| `tools/fetch-firmware.py` | the PS Vita firmware Vita3K needs (3.74 and the font package) from Sony's update servers, checked by SHA-256 |
+| `tools/make-setup.py`, `tools/setup-windows.json`, `tools/setup.py` | a game's setup for players: Python's embeddable distribution (with capstone and PyYAML, pinned), the kit, the game's front end; `setup.py` runs on the player's PC (see below) |
 
 ## Tools
 
@@ -84,7 +86,7 @@ cmake --build <build dir>
 
 ### Without Visual Studio
 
-`tools/toolchain.py` downloads a toolchain for the modules (444 MB, ~930 MB
+`tools/toolchain.py` downloads a toolchain for the modules (447 MB, ~930 MB
 unpacked: llvm-mingw's clang 23 as `clang-cl`/`lld-link`/`llvm-lib`, the MSVC
 14.44 runtime libraries and headers, the Windows SDK 10.0.26100 for x64),
 checks every file against `tools/toolchain-windows.json` and unpacks it.
@@ -103,3 +105,33 @@ flags, archives `gen_<module>.lib` and links the DLL, incrementally, with no
 CMake or Ninja. Soul Sacrifice Delta's ten modules build in 3 min with 6 jobs
 (MSVC: ~12 min); they load in the MSVC-built fork, and the differential check
 found no mismatch.
+
+## A setup for players
+
+A player who has a dump of the game, but no Git, Visual Studio or Python,
+gets a playable folder from a setup. The setup holds Python's embeddable
+distribution, this kit and the game's front end, and no game or firmware
+data.
+
+```
+python -I tools/build-vita3k.py --project <game> --games-only     # -> <game>/build/vita3k-games
+python -I tools/make-setup.py build tools/setup-windows.json --project <game> ^
+       --bin <game>/build/vita3k-games/bin/RelWithDebInfo --out <dir>/<game>-setup --zip
+```
+
+On the player's PC, `setup.bat` asks for the dump's parts (game, update,
+add-ons, with their licences), or takes them as `install-game.py` does. It
+shows Microsoft's licence and needs the player to accept it, then:
+
+1. downloads the firmware from Sony (`fetch-firmware.py`) and the toolchain
+   (`toolchain.py`) into `%LOCALAPPDATA%\vita-recomps`, shared by every
+   game's setup;
+2. installs the game, runs it once to write the modules as loaded,
+   recompiles them and compiles them with the toolchain (`install-game.py
+   --bin --toolchain --out`);
+3. lays out the playable folder with the VC++ runtime DLLs beside the
+   executable.
+
+`make-setup.py` refuses to write a setup that holds anything that looks
+like game data (ELFs, pkgs, PUPs, licences, recompiled modules, saves,
+logs).

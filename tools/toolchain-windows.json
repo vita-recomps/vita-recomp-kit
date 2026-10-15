@@ -5,7 +5,7 @@
  "sdk": "Win11SDK_10.0.26100",
  "visual_studio": "17.14.42",
  "microsoft_license": "https://go.microsoft.com/fwlink/?LinkId=2179911",
- "download_bytes": 465779220,
+ "download_bytes": 469015468,
  "payloads": [
   {
    "kind": "vsix",
@@ -27,6 +27,13 @@
    "url": "https://download.visualstudio.microsoft.com/download/pr/67cf767c-5e71-47c2-a54a-cd5631e28942/9135b03c0df53c7a0aa9bef7230a1c2ff4263a0ee7baa7e419d034f484f6bb56/Microsoft.VC.14.44.17.14.CRT.x64.Store.base.vsix",
    "sha256": "9135b03c0df53c7a0aa9bef7230a1c2ff4263a0ee7baa7e419d034f484f6bb56",
    "size": 28032384
+  },
+  {
+   "kind": "vsix",
+   "file": "Microsoft.VC.14.44.17.14.CRT.Redist.X64.base.vsix",
+   "url": "https://download.visualstudio.microsoft.com/download/pr/45d3b8dd-bced-4b37-9974-142f748d710c/4aaf54db0bfc9435f7c3660e1a00237a4b556042bfeea64bde44c2e0194e6ee5/Microsoft.VC.14.44.17.14.CRT.Redist.X64.base.vsix",
+   "sha256": "4aaf54db0bfc9435f7c3660e1a00237a4b556042bfeea64bde44c2e0194e6ee5",
+   "size": 3236248
   },
   {
    "kind": "msi",

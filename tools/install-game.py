@@ -10,7 +10,8 @@ Everything it writes is derived from the player's dump and firmware: it stays lo
 usage:
   python -I install-game.py [--project DIR] --firmware PUP [PUP ...]
                             --install <zip|vpk|folder|pkg> [--license <work.bin|rif> | --zrif Z]
-                            [--install ...] [--name NAME] [--dump-seconds N] [--no-recompile] [--no-jit]
+                            [--install ...] [--name NAME | --out DIR] [--dump-seconds N] [--no-recompile]
+                            [--no-jit] [--bin DIR] [--toolchain DIR] [--jobs N]
 
   --install   repeat for each part, in order (the game, then its patch, then add-ons); a pkg's
               --license or --zrif follows it. A patch's or add-on's licence can be omitted when
@@ -18,6 +19,11 @@ usage:
   --no-recompile  stop after step 2: the folder runs everything on the JIT
   --no-jit        package the front end built without dynarmic (build-vita3k.py --no-jit): native
                   code only. The install and the ELF dump still use the JIT build.
+  --bin           the front end's folder from a prebuilt release instead of the project's build
+                  (it installs, dumps and is packaged)
+  --toolchain     compile with the toolchain toolchain.py unpacked there (no Visual Studio, CMake or
+                  Ninja); otherwise MSVC, CMake and Ninja
+  --out           the playable folder (default dist/<name>); the work files go to <out>-work
 """
 import argparse
 import glob
@@ -29,6 +35,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import msvc  # noqa: E402
+import toolchain  # noqa: E402
 from gameproject import Project  # noqa: E402
 
 RECOMP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'recomp')
@@ -54,17 +61,25 @@ def main():
     ap.add_argument('--dump-seconds', type=int, default=0)
     ap.add_argument('--no-recompile', action='store_true')
     ap.add_argument('--no-jit', action='store_true')
+    ap.add_argument('--bin', default='')
+    ap.add_argument('--toolchain', default='')
+    ap.add_argument('--out', default='')
+    ap.add_argument('--jobs', type=int, default=4)
     a = ap.parse_args(rest)
     if '--install' not in content:
         sys.exit('nothing to install: --install <game dump>')
 
     p = Project(a.project)
-    exe = p.exe()
+    exe = p.exe(bin_dir=a.bin)
     bin_dir = os.path.dirname(exe)
     name = a.name or p.id
-    out = os.path.join(p.root, 'dist', name)
+    if a.out:
+        out = os.path.abspath(a.out)
+        work = out + '-work'
+    else:
+        out = os.path.join(p.root, 'dist', name)
+        work = os.path.join(p.root, 'build', 'install-' + name)
     fs = os.path.join(out, 'fs')
-    work = os.path.join(p.root, 'build', 'install-' + name)
     os.makedirs(fs, exist_ok=True)
     os.makedirs(work, exist_ok=True)
 
@@ -122,18 +137,24 @@ def main():
                     print(' ', line)
             if r.returncode:
                 sys.exit(f'recompiling {m} failed:\n{r.stderr}')
-        env = msvc.environment()
-        if subprocess.run(['cmake', '-S', RECOMP, '-B', recompiled_dir, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release',
-                           f'-DGENERATED_DIR={gen}', '-DRECOMP_MODULES=' + ';'.join(p.modules.values()),
-                           '-DRECOMP_TESTS=OFF'], env=env, capture_output=True).returncode:
-            sys.exit('configuring the recompiled modules failed')
         print('compiling (this takes a while)')
-        if subprocess.run(['cmake', '--build', recompiled_dir], env=env).returncode:
-            sys.exit('compiling the recompiled modules failed')
+        if a.toolchain:
+            toolchain.build_modules(gen, list(p.modules.values()), recompiled_dir, a.toolchain, a.jobs)
+        else:
+            env = msvc.environment()
+            if subprocess.run(['cmake', '-S', RECOMP, '-B', recompiled_dir, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release',
+                               f'-DGENERATED_DIR={gen}', '-DRECOMP_MODULES=' + ';'.join(p.modules.values()),
+                               '-DRECOMP_TESTS=OFF', f'-DRECOMP_JOBS={a.jobs}'], env=env,
+                              capture_output=True).returncode:
+                sys.exit('configuring the recompiled modules failed')
+            if subprocess.run(['cmake', '--build', recompiled_dir], env=env).returncode:
+                sys.exit('compiling the recompiled modules failed')
 
     # 5. the folder; the Vita file system is its own fs/, the ini's default
     dist = [sys.executable, '-I', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'make-dist.py'),
-            '--project', p.root, '--name', name]
+            '--project', p.root, '--out', out]
+    dist += ['--bin', bin_dir] if a.bin else []
+    dist += ['--redist', os.path.join(a.toolchain, 'redist')] if a.toolchain else []
     dist += ['--recompiled-dir', recompiled_dir] if not a.no_recompile and p.modules else ['--no-recompiled']
     dist += ['--no-jit'] if a.no_jit else []
     sys.exit(subprocess.run(dist).returncode)
