@@ -22,6 +22,7 @@ import json
 import os
 import re
 import shutil
+import struct
 import subprocess
 import tempfile
 import sys
@@ -39,6 +40,48 @@ BIN_FILES = re.compile(r'^(\w[\w-]*\.exe|discord_game_sdk\.dll|lib(ssl|crypto)-\
 BIN_DIRS = ('data', 'shaders-builtin', 'icons')
 # files a setup must never contain
 FORBIDDEN = re.compile(r'(?i)(\.(elf|self|suprx|pkg|pup|rif|vpk|bin|psarc|log)$|work\.bin|ssd_aot_|elfdumps|savedata)')
+
+
+# DLLs a game's folder need not carry: the VC++ runtime (the setup copies it from Microsoft's package)
+VC_RUNTIME = re.compile(r'(?i)^(msvcp140.*|vcruntime140.*|concrt140)\.dll$')
+
+
+def pe_imports(path):
+    """The DLL names a PE32+ file imports, normal and delay-loaded."""
+    with open(path, 'rb') as f:
+        d = f.read()
+    pe = struct.unpack_from('<I', d, 0x3c)[0]
+    nsec, optsz = struct.unpack_from('<H', d, pe + 6)[0], struct.unpack_from('<H', d, pe + 20)[0]
+    opt = pe + 24
+    secs = [struct.unpack_from('<8sIIII', d, opt + optsz + 40 * i) for i in range(nsec)]
+
+    def off(rva):
+        for _, vsz, va, rsz, ptr in secs:
+            if va <= rva < va + max(vsz, rsz):
+                return rva - va + ptr
+        raise ValueError(hex(rva))
+
+    names = []
+    for idx, size, name_at in ((1, 20, 12), (13, 32, 4)):
+        rva = struct.unpack_from('<I', d, opt + 112 + 8 * idx)[0]
+        o = off(rva) if rva else None
+        while o is not None:
+            name = struct.unpack_from('<I', d, o + name_at)[0]
+            if not name:
+                break
+            n = off(name)
+            names.append(d[n:d.index(b'\0', n)].decode())
+            o += size
+    return names
+
+
+def missing_dlls(exe):
+    """Imported DLLs that are neither beside the exe, part of Windows, nor the VC++ runtime."""
+    system = os.path.join(os.environ.get('SystemRoot', r'C:\Windows'), 'System32')
+    here = {f.lower() for f in os.listdir(os.path.dirname(exe))}
+    return sorted(n for n in pe_imports(exe)
+                  if n.lower() not in here and not n.lower().startswith(('api-ms-', 'ext-ms-'))
+                  and not VC_RUNTIME.match(n) and not os.path.exists(os.path.join(system, n)))
 
 
 def get(url, path=None):
@@ -174,6 +217,12 @@ def build(a):
         f.write('@echo off\nif "%~1"=="" (\n  start "" "%~dp0python\\pythonw.exe" -I "%~dp0kit\\tools\\setup.py"\n'
                 '  exit /b 0\n)\n"%~dp0python\\python.exe" -I -u "%~dp0kit\\tools\\setup.py" %*\n'
                 'set rc=%errorlevel%\nif "%~1"=="--console" pause\nexit /b %rc%\n')
+
+    # release check: the executable finds every DLL it imports on a player's PC
+    missing = missing_dlls(os.path.join(game, p.id + '.exe'))
+    if missing:
+        shutil.rmtree(out)
+        sys.exit(f'refused, {p.id}.exe imports DLLs the setup does not carry: ' + ', '.join(missing))
 
     # release check: nothing that looks like game or firmware data
     bad = [os.path.relpath(os.path.join(d, f), out) for d, _, fs in os.walk(out) for f in fs
