@@ -119,9 +119,14 @@ python -I tools/make-setup.py build tools/setup-windows.json --project <game> ^
        --bin <game>/build/vita3k-games/bin/RelWithDebInfo --out <dir>/<game>-setup --zip
 ```
 
-On the player's PC, `setup.bat` asks for the dump's parts (game, update,
-add-ons, with their licences), or takes them as `install-game.py` does. It
-shows Microsoft's licence and needs the player to accept it, then:
+On the player's PC, `setup.bat` opens a window (`setupgui.py`, Tk from
+python.org's `tcltk.msi`). The window asks for:
+* the dump's parts: the game, its update and add-ons, with their licences;
+* the playable folder;
+* acceptance of Microsoft's licence.
+
+With arguments (taken as `install-game.py` takes them), or with
+`--console`, `setup.bat` runs in the console instead. Either way, it then:
 
 1. downloads the firmware from Sony (`fetch-firmware.py`) and the toolchain
    (`toolchain.py`) into `%LOCALAPPDATA%\vita-recomps`, shared by every
