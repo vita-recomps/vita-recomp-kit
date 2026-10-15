@@ -1,4 +1,6 @@
 import struct,sys
+# titles in other scripts (Polish, Russian, Japanese ...) must not stop a cp1252 console
+sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 d=open(sys.argv[1],'rb').read()
 m,v,kt,dt,n=struct.unpack_from('<4sIIII',d,0)
 for i in range(n):

@@ -65,7 +65,8 @@ PLAYER = 1  # --player N: Ad Hoc Play's copy N of the front end (window "... (pl
 STICKS = {"ls_up": (1, -1.0), "ls_down": (1, 1.0), "ls_left": (0, -1.0), "ls_right": (0, 1.0),
           "rs_up": (3, -1.0), "rs_down": (3, 1.0), "rs_left": (2, -1.0), "rs_right": (2, 1.0)}
 # single-game front ends of the fork: executable -> start of its window title
-FRONTENDS = {"ss-delta.exe": "Soul Sacrifice Delta", "shinobido2.exe": "Shinobido 2"}
+FRONTENDS = {"ss-delta.exe": "Soul Sacrifice Delta", "shinobido2.exe": "Shinobido 2",
+             "vekta-mercenary.exe": "Killzone Mercenary"}
 EXE = "ss-delta.exe"  # --exe, or the one front end in <vita3k dir>
 WINDOW_TITLE = FRONTENDS[EXE]  # --title
 IMAGES = ("Vita3K.exe", EXE)

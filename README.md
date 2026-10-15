@@ -3,9 +3,9 @@
 A shared toolchain for the static recompilation of PS Vita games: it turns a
 game's decrypted ARM (Thumb-2, ARM, VFP, NEON) code into C++, builds that into
 DLLs a Vita3K fork loads in place of its JIT, and holds the tools used to study
-the binaries and drive test runs. It is used, as a git submodule, by two game
-ports: ss-delta (Soul Sacrifice Delta) and utakata (Shinobido 2: Revenge
-of Zen). The history comes from ss-delta, where it was written; comments that
+the binaries and drive test runs. It is used, as a git submodule, by three
+game ports: ss-delta (Soul Sacrifice Delta), utakata (Shinobido 2: Revenge
+of Zen) and vekta-mercenary (Killzone Mercenary). The history comes from ss-delta, where it was written; comments that
 cite `docs/...` (decisions D6-D11, plan phases) refer to ss-delta's documents.
 
 **No game data is in this repository**, and none may be committed: no ELFs,
@@ -56,7 +56,7 @@ Each script's docstring has the details.
 - `python -I tools/inventory.py <elf> <vita-headers db dir> <out dir>`
 - `python -I tools/imix.py <elf> [velf json] [--seg-off HEX] [--seg-va HEX] [--exidx HEX]`: the code segment and the exidx start come from the ELF unless overridden
 - `python -I tools/sfo.py <param.sfo>`
-- `python -I tools/v3kdrive.py <dir> launch|start|run|bootseq|title|close ... [--exe NAME] [--title PREFIX] [--player N]`: without `--exe`, the one known front end (`ss-delta.exe`, `shinobido2.exe`) in `<dir>`, else `ss-delta.exe`
+- `python -I tools/v3kdrive.py <dir> launch|start|run|bootseq|title|close ... [--exe NAME] [--title PREFIX] [--player N]`: without `--exe`, the one known front end (`ss-delta.exe`, `shinobido2.exe`, `vekta-mercenary.exe`) in `<dir>`, else `ss-delta.exe`
 - `python -I tools/stackdump.py <pid or image name> [max frames]`
 - `python -I tools/mkzrif.py <psvpfstools keyflate.c> <work.bin>`
 - `python -I tools/fetch-update.py <title id> [out dir]`
