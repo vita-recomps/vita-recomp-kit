@@ -35,6 +35,8 @@ directories and passes their paths in.
 | `tools/proccap/proccap.cpp`, `tools/wavstats.py` | records one process's audio to WAV; loudness and onsets over time |
 | `tools/leak-scan.py` | pre-push hook (`install <repo>`) or `check <range>`: blocks game-data files, big files, licence strings, tokens, user folders and the owner's private patterns (`git config leakscan.patterns <file>`, kept outside the repo) from reaching a remote |
 | `tools/build-vita3k.py` | builds a game project's `third_party/vita3k` with MSVC + Ninja into `build/vita3k` (`msvc.py` finds MSVC with vswhere) |
+| `tools/build-recomp.py` | builds a game project's `generated/<module>/` into `ssd_aot_<module>.dll`: MSVC + CMake + Ninja, or `--toolchain <dir>` without any of them |
+| `tools/toolchain.py`, `tools/toolchain-windows.json` | a compiler for the modules that needs no Visual Studio: llvm-mingw's clang-cl and lld-link with Microsoft's C++ runtime and Windows SDK downloaded from Microsoft's Visual Studio manifest, every file pinned by SHA-256 in the lock file |
 | `tools/install-game.py`, `tools/make-dist.py` | from the player's dump (firmware, game, patch, add-ons; pkgs with their licence) to a playable folder `dist/<name>/`, as the game's `game.json` describes it (`gameproject.py`) |
 
 ## Tools
@@ -79,3 +81,25 @@ cmake --build <build dir>
 | `RECOMP_TEST_MODULE` | `eboot` | the module whose tests to build |
 | `VITA3K_SRC`, `VITA3K_BUILD` | none | the fork's source and build trees (dynarmic for the tests); required when the tests are built |
 | `VITA3K_CONFIG` | `RelWithDebInfo` | configuration of the fork build whose libraries the tests link |
+
+### Without Visual Studio
+
+`tools/toolchain.py` downloads a toolchain for the modules (444 MB, ~930 MB
+unpacked: llvm-mingw's clang 23 as `clang-cl`/`lld-link`/`llvm-lib`, the MSVC
+14.44 runtime libraries and headers, the Windows SDK 10.0.26100 for x64),
+checks every file against `tools/toolchain-windows.json` and unpacks it.
+Microsoft's files come from Microsoft's servers under Microsoft's licence
+(the Visual Studio Build Tools licence, linked in the lock file), which whoever
+runs the tool accepts; nothing of Microsoft's is in this repository.
+
+```
+python -I tools/toolchain.py fetch tools/toolchain-windows.json <dir> --accept-microsoft-license
+python -I tools/build-recomp.py --project <game> --toolchain <dir> [--jobs N]   # -> <game>/build/recomp-llvm
+python -I tools/toolchain.py resolve tools/toolchain-windows.json                # maintainers: pin newer releases
+```
+
+`build-recomp.py --toolchain` compiles with `recomp/CMakeLists.txt`'s Release
+flags, archives `gen_<module>.lib` and links the DLL, incrementally, with no
+CMake or Ninja. Soul Sacrifice Delta's ten modules build in 3 min with 6 jobs
+(MSVC: ~12 min); they load in the MSVC-built fork, and the differential check
+found no mismatch.
