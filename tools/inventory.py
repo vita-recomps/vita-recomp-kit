@@ -239,6 +239,14 @@ class Inventory:
 
                 # --- constants (per path)
                 dest = ops.split(',')[0].strip() if ops else ''
+                if ('stride', dest) in regs and not m.startswith(NO_DEST):
+                    regs = dict(regs); regs.pop(('stride', dest))
+                if thumb and m == 'add' and dest in CORE_REGS and ops.count(',') == 3 and ops.endswith(tuple(f'lsl #{n}' for n in range(1, 6))):
+                    # add rX, rT, rI, lsl #n with rT a code address (adr): a computed jump into steps of
+                    # 2^n bytes from rT (an unrolled loop entered part way, as in a division routine)
+                    _, src, _, sh = [p.strip() for p in ops.split(',')]
+                    if src in regs and isinstance(regs[src], int) and self.text.vaddr <= regs[src] < self.elf.module_info_va:
+                        regs = dict(regs); regs[('stride', dest)] = (regs[src], 1 << int(sh.split('#')[1]))
                 if m == 'movw' and dest in CORE_REGS:
                     regs = dict(regs); regs[dest] = imm(ops.split(',')[1])
                 elif m == 'movt' and dest in CORE_REGS:
@@ -263,6 +271,10 @@ class Inventory:
                         regs.pop(dest, None)
                 elif m == 'adr' and dest in CORE_REGS:
                     regs = dict(regs); regs[dest] = ((pc & ~3) if thumb else pc) + imm(ops.split(',')[1])
+                elif thumb and m in ('addw', 'subw') and dest in CORE_REGS and ops.replace(' ', '').split(',')[1:2] == ['pc']:
+                    # addw rd, pc, #imm: adr's other spelling (Align(PC, 4) + imm)
+                    off = imm(ops.split(',')[2])
+                    regs = dict(regs); regs[dest] = (pc & ~3) + (off if m == 'addw' else -off)
                 elif m in ('pop', 'ldm', 'ldmia', 'ldmfd') or m.startswith(('ldm', 'pop')):
                     regs = {}
                 elif dest in CORE_REGS and not m.startswith(NO_DEST) and dest in regs:
@@ -379,6 +391,22 @@ class Inventory:
                         c['jumptables'] += 1
                         addr = nxt  # the default case follows the table instruction
                         continue
+                    elif thumb and m == 'mov' and ('stride', ops.split(',')[1].strip()) in regs:
+                        base_addr, stride = regs[('stride', ops.split(',')[1].strip())]
+                        self.decode_stride_table(a, start, end, base_addr, stride, ops.split(',')[1].strip(), work)
+                        c['jumptables'] += 1
+                        if conditional:
+                            addr = nxt
+                            continue
+                        break
+                    elif thumb and self.word_table_parts(m, ops, regs, last_cmp):
+                        base_reg, index = self.word_table_parts(m, ops, regs, last_cmp)
+                        self.decode_word_table(a, start, end, regs[base_reg], base_reg, index, last_cmp, work)
+                        c['jumptables'] += 1
+                        if conditional:
+                            addr = nxt
+                            continue
+                        break
                     else:
                         src = ops.split(',', 1)[1].strip() if ',' in ops else ''
                         self.record_indirect(a, start, mn, ops, 'jump_' + m, src, regs.get(src))
@@ -564,6 +592,49 @@ class Inventory:
         self.jumptables.append(dict(site=f'{a:#x}', func=f'{start:#x}', kind=m, base=base, index=index,
                                     count=len(targets), count_source=source,
                                     targets_out_of_function=out_of_range,
+                                    targets=' '.join(f'{t:#x}' for t in targets)))
+
+    @staticmethod
+    def word_table_parts(m, ops, regs, last_cmp):
+        """ldr.w pc, [rB, rI, lsl #2] with rB from adr and rI bounded by the last cmp (a Thumb table of
+        case addresses after the instruction): (rB, rI), else None"""
+        if m != 'ldr' or not ops.startswith('pc, [') or not last_cmp:
+            return None
+        parts = [p.strip(' []') for p in ops.split(',')]
+        if len(parts) != 4 or parts[3] != 'lsl #2' or parts[1] not in regs or parts[2] != last_cmp[0]:
+            return None
+        return parts[1], parts[2]
+
+    def decode_word_table(self, a, start, end, table, base_reg, index, last_cmp, work):
+        # ldr.w pc, [rB, rI, lsl #2]: a word per case (a Thumb address), rB set by adr
+        count = last_cmp[1] + 1
+        targets = []
+        for k in range(count):
+            w = self.word(table + 4 * k)
+            if w is None:
+                break
+            targets.append(w & ~1)
+        for k in range(len(targets) * 4):
+            o = table - self.text.vaddr + k
+            if 0 <= o < len(self.code_bytes):
+                self.code_bytes[o] = 2
+        for t in set(targets):
+            if start <= t < end:
+                work.append((t, 0, {}, None))
+        self.jumptables.append(dict(site=f'{a:#x}', func=f'{start:#x}', kind='ldr_table', base=base_reg,
+                                    index=index, count=len(targets), count_source='cmp',
+                                    targets_out_of_function=sum(1 for t in targets if not start <= t < end),
+                                    targets=' '.join(f'{t:#x}' for t in targets)))
+
+    def decode_stride_table(self, a, start, end, base_addr, stride, reg, work):
+        # mov pc, rX with rX = base + index * stride: one case per step, at most 32 (an index from a
+        # bit count), all inside the function
+        targets = [base_addr + k * stride for k in range(32) if base_addr + k * stride < end]
+        for t in targets:
+            work.append((t, 0, {}, None))
+        self.jumptables.append(dict(site=f'{a:#x}', func=f'{start:#x}', kind='stride_table', base=f'{base_addr:#x}',
+                                    index=reg, count=len(targets), count_source=f'stride {stride}',
+                                    targets_out_of_function=0,
                                     targets=' '.join(f'{t:#x}' for t in targets)))
 
     def decode_arm_table(self, a, start, end, m, ops, last_cmp, work):

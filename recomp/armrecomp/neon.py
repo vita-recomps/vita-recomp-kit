@@ -179,7 +179,7 @@ def translate(cx):
         return
     if base in ('vrev32', 'vrev16'):
         (d, nb, _), (m, _, _) = regs()
-        emit(f'vrev<{INT[t0]}, {int(base[4:]) // 8}, {nb // 8}>(ctx, {d}, {m});')
+        emit(f'vrev<{INT[t0]}, {int(base[4:]) // 8}, {nb}>(ctx, {d}, {m});')
         return
     if base in ('vtrn', 'vzip'):
         (d, nb, _), (m, _, _) = regs()

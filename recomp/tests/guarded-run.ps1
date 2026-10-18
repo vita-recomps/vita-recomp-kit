@@ -2,6 +2,9 @@
 #   .\recomp\tests\guarded-run.ps1 <exe> <log> [args...]
 param([string]$Exe, [string]$Log, [int]$MaxMB = 3072, [int]$MaxMinutes = 20, [Parameter(ValueFromRemainingArguments)] [string[]]$Rest)
 $p = Start-Process -FilePath $Exe -ArgumentList $Rest -RedirectStandardOutput $Log -NoNewWindow -PassThru
+# Windows PowerShell reports ExitCode only for a process whose handle was opened while it ran: without
+# this, a failing test run exited 0 and run-tests.ps1 printed "all modules pass"
+$null = $p.Handle
 $sw = [Diagnostics.Stopwatch]::StartNew()
 while (-not $p.HasExited) {
     Start-Sleep -Milliseconds 500

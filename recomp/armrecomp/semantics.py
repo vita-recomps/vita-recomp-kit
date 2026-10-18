@@ -1065,6 +1065,20 @@ def translate(ins, thumb, imports, func_start, func_end, jumptables, patched=fro
             idx = cx.r(reg_index(cs, mop.mem.index))
             t.kind = 'jumptable'
             t.jumptable = (idx, jumptables.get(ins.address, []))
+        elif thumb and m == 'ldr' and ins.address in jumptables and ops[0].type == arm.ARM_OP_REG and \
+                cx.ridx(ops[0]) == 15 and ops[1].type == arm.ARM_OP_MEM and ops[1].mem.index:
+            # ldr.w pc, [rB, rI, lsl #2] over a table of case addresses (the inventory's ldr_table)
+            idx = cx.r(reg_index(cs, ops[1].mem.index))
+            t.kind = 'jumptable'
+            t.jumptable = (idx, jumptables[ins.address])
+        elif thumb and m == 'mov' and ins.address in jumptables and len(ops) == 2 and ops[0].type == arm.ARM_OP_REG and \
+                cx.ridx(ops[0]) == 15 and ops[1].type == arm.ARM_OP_REG and len(jumptables[ins.address]) > 1:
+            # mov pc, rX into evenly spaced steps (the inventory's stride_table): a switch over the steps
+            targets = jumptables[ins.address]
+            stride = targets[1] - targets[0]
+            idx = f'((ctx->r[{cx.ridx(ops[1])}] - 0x{targets[0]:08x}u) / {stride}u)'
+            t.kind = 'jumptable'
+            t.jumptable = (idx, targets)
         elif base in ('mov', 'mvn', 'add', 'adc', 'sub', 'sbc', 'rsb', 'rsc', 'and', 'orr', 'eor', 'bic',
                       'orn', 'cmp', 'cmn', 'tst', 'teq'):
             ops2 = ops
