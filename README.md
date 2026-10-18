@@ -131,7 +131,8 @@ With arguments (taken as `install-game.py` takes them), or with
 1. downloads the firmware from Sony (`fetch-firmware.py`) and the toolchain
    (`toolchain.py`) into `%LOCALAPPDATA%\vita-recomps`, shared by every
    game's setup;
-2. installs the game, runs it once to write the modules as loaded,
+2. installs the game, runs it once (hidden and silent: the front end's
+   `--dump-elfs`) to write the modules as loaded,
    recompiles them and compiles them with the toolchain (`install-game.py
    --bin --toolchain --out`);
 3. lays out the playable folder with the VC++ runtime DLLs beside the

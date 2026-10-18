@@ -16,7 +16,7 @@ STAGES = [
     # (pattern in setup.py's output, what the window says)
     (r'^1/3 ', 'Downloading the firmware (from Sony) and the compiler'),
     (r'^installing ', 'Installing the game into the playable folder'),
-    (r'^running the game for (\d+)', 'Starting the game once to load its code (a window opens; leave it alone)'),
+    (r'^running the game for (\d+)', 'Starting the game once, unseen, to load its code (about a minute)'),
     (r'^recompiling ', 'Translating the game\'s code into C++'),
     (r'^compiling', 'Compiling the translated code'),
     (r'^3/3 done', 'Done'),
