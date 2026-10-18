@@ -11,7 +11,9 @@ return address and escapes to the fallback CPU otherwise.
 Resume points: the return address of every call outside an IT block is also an entry. With
 ctx->resume set to it, the function starts there (all guest state is in ctx between instructions),
 so a frame the fallback CPU took over after an escape (a fiber switch) runs natively again once its
-callee returns.
+callee returns. The function's orphan entries (code the inventory found no path to, such as the
+helpers a hand-written routine calls and jumps to through computed pc-relative addresses) are resume
+points too, so those computed calls and jumps find native code.
 """
 from . import semantics
 
@@ -121,6 +123,11 @@ class FunctionEmitter:
                     and nxt in self.addr_index and insns[self.addr_index[nxt]].it_cond is None):
                 resumes.append(nxt)
                 labels.add(nxt)
+        for a in f.orphan_entries:
+            if a in self.addr_index and insns[self.addr_index[a]].it_cond is None and a not in resumes:
+                resumes.append(a)
+                labels.add(a)
+        resumes.sort()
         # basic blocks, for the executed-instruction counter (RECOMP_COUNT)
         starts = [i for i, (ins, t) in enumerate(zip(insns, tr))
                   if i == 0 or ins.address in labels or tr[i - 1].kind in ENDS_BLOCK]

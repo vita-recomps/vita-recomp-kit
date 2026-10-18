@@ -43,6 +43,9 @@ class Function:
     row: dict  # the inventory row (counts and flags)
     jumptables: dict = field(default_factory=dict)  # tbb/tbh site -> [case targets]
     landing_pads: list = field(default_factory=list)
+    # code no path inside the function reaches but that something enters (the inventory's orphan
+    # roots: a hand-written routine's helpers reached through a computed pc-relative address)
+    orphan_entries: list = field(default_factory=list)
     decoder: object = None  # () -> instructions
     _instructions: list = None
 
@@ -102,6 +105,9 @@ class Module:
         tables = {}
         for t in self.inv.jumptables:
             tables[int(t['site'], 16) + delta] = [int(x, 16) + delta for x in t['targets'].split()]
+        orphans = {}
+        for o in self.inv.orphans:
+            orphans.setdefault(int(o['func'], 16), []).append(int(o['target'], 16))
         self.functions = []
         for row in self.inv.functions:
             start, end = int(row['start'], 16), int(row['end'], 16)
@@ -112,6 +118,7 @@ class Module:
                 if addr + delta in tables:
                     f.jumptables[addr + delta] = tables[addr + delta]
             f.landing_pads = sorted(p + delta for p in self.inv.landing_pads.get(start, ()))
+            f.orphan_entries = sorted(o + delta for o in orphans.get(start, ()))
             self.functions.append(f)
 
     def _decode(self, start, thumb):

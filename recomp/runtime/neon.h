@@ -224,6 +224,18 @@ inline void vrev64(GuestContext *c, unsigned d, unsigned m) {
     vset(c, d, r);
 }
 
+// vrev16 / vrev32: reverse the T elements of every Group-byte group of a Size-byte register
+template <typename T, int Group, int Size>
+inline void vrev(GuestContext *c, unsigned d, unsigned m) {
+    constexpr int per = Group / sizeof(T), n = Size / sizeof(T);
+    const auto a = vget<T, n>(c, m);
+    Vec<T, n> r;
+    for (int g = 0; g < n; g += per)
+        for (int i = 0; i < per; i++)
+            r.e[g + i] = a.e[g + per - 1 - i];
+    vset(c, d, r);
+}
+
 // vtrn: Vd[2i+1] <-> Vm[2i]
 template <typename T, int N>
 inline void vtrn(GuestContext *c, unsigned d, unsigned m) {
@@ -265,6 +277,18 @@ inline void vtbl(GuestContext *c, unsigned d, unsigned n, unsigned len, unsigned
     Vec<uint8_t, 8> r;
     for (int i = 0; i < 8; i++)
         r.e[i] = idx.e[i] < 8 * len ? table[idx.e[i]] : 0;
+    vset(c, d, r);
+}
+
+// vtbx.8 d, {n .. n+len-1}, m: byte lookup, out of range -> d's byte unchanged
+inline void vtbx(GuestContext *c, unsigned d, unsigned n, unsigned len, unsigned m) {
+    uint8_t table[32];
+    std::memcpy(table, &c->vfp.d[n], 8 * len);
+    const auto idx = vget<uint8_t, 8>(c, m);
+    auto r = vget<uint8_t, 8>(c, d);
+    for (int i = 0; i < 8; i++)
+        if (idx.e[i] < 8 * len)
+            r.e[i] = table[idx.e[i]];
     vset(c, d, r);
 }
 

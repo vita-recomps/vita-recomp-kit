@@ -177,15 +177,19 @@ def translate(cx):
         (d, nb, _), (m, _, _) = regs()
         emit(f'vrev64<{INT[t0]}, {nb // 8}>(ctx, {d}, {m});')
         return
+    if base in ('vrev32', 'vrev16'):
+        (d, nb, _), (m, _, _) = regs()
+        emit(f'vrev<{INT[t0]}, {int(base[4:]) // 8}, {nb // 8}>(ctx, {d}, {m});')
+        return
     if base in ('vtrn', 'vzip'):
         (d, nb, _), (m, _, _) = regs()
         t = INT[t0]
         emit(f'{base}<{t}, {lanes(t, nb)}>(ctx, {d}, {m});')
         return
-    if base == 'vtbl':
+    if base in ('vtbl', 'vtbx'):
         rs = regs()
         d, n, m = rs[0][0], rs[1][0], rs[-1][0]
-        emit(f'vtbl(ctx, {d}, {n}, {len(rs) - 2}u, {m});')
+        emit(f'{base}(ctx, {d}, {n}, {len(rs) - 2}u, {m});')
         return
 
     # --- bitwise (no element type) ---

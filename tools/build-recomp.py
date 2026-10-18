@@ -3,12 +3,16 @@
 
 usage:
   python -I build-recomp.py [--project DIR] [--modules eboot libc ...] [--jobs N] [--toolchain DIR]
+                            [--bisect]
 
   --modules    default: every folder in generated/ that has a funcs.h
   --jobs       parallel compiles of generated code (default 4; memory, not cores, is the usual
                limit: the largest buckets take ~0.5 GB each)
   --toolchain  build with the clang-cl toolchain toolchain.py unpacked into DIR, without Visual Studio,
                CMake or Ninja, into build/recomp-llvm; otherwise MSVC, CMake and Ninja, into build/recomp
+  --bisect     a RECOMP_BISECT build (every direct call goes through the host, so SSD_AOT_RANGE can
+               bisect down to one function and SSD_AOT_DIFF can check every call), into
+               build/recomp-llvm-bisect or build/recomp-bisect
 """
 import argparse
 import glob
@@ -24,12 +28,12 @@ import toolchain  # noqa: E402
 RECOMP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'recomp')
 
 
-def build_with_cmake(root, gen, modules, jobs):
-    build = os.path.join(root, 'build', 'recomp')
+def build_with_cmake(root, gen, modules, jobs, bisect=False):
+    build = os.path.join(root, 'build', 'recomp-bisect' if bisect else 'recomp')
     env = msvc.environment()
     configure = ['cmake', '-S', RECOMP, '-B', build, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release',
                  f'-DGENERATED_DIR={gen}', '-DRECOMP_MODULES=' + ';'.join(modules), '-DRECOMP_TESTS=OFF',
-                 f'-DRECOMP_JOBS={jobs}']
+                 f'-DRECOMP_JOBS={jobs}', f'-DRECOMP_BISECT={"ON" if bisect else "OFF"}']
     # configure every time: the module list and paths may change; CMake keeps the build incremental
     if subprocess.run(configure, env=env, capture_output=True).returncode:
         sys.exit("configuring the recompiled modules failed")
@@ -44,6 +48,7 @@ def main():
     ap.add_argument('--modules', nargs='*', default=[])
     ap.add_argument('--jobs', type=int, default=4)
     ap.add_argument('--toolchain')
+    ap.add_argument('--bisect', action='store_true')
     a = ap.parse_args()
 
     root = os.path.abspath(a.project)
@@ -55,10 +60,10 @@ def main():
     print(f'building {", ".join(modules)} ({a.jobs} jobs)')
     start = time.time()
     if a.toolchain:
-        build = os.path.join(root, 'build', 'recomp-llvm')
-        toolchain.build_modules(gen, modules, build, a.toolchain, a.jobs)
+        build = os.path.join(root, 'build', 'recomp-llvm-bisect' if a.bisect else 'recomp-llvm')
+        toolchain.build_modules(gen, modules, build, a.toolchain, a.jobs, ('RECOMP_BISECT',) if a.bisect else ())
     else:
-        build = build_with_cmake(root, gen, modules, a.jobs)
+        build = build_with_cmake(root, gen, modules, a.jobs, a.bisect)
     dlls = sorted(glob.glob(os.path.join(build, '*.dll')))
     print(f'built in {(time.time() - start) / 60:.1f} min: ' + ', '.join(os.path.basename(d) for d in dlls))
 

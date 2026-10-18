@@ -228,8 +228,9 @@ def run(cmd, env, rsp=None):
     return (r.stdout + r.stderr).strip() if r.returncode else None
 
 
-def build_modules(gen, modules, build, toolchain_dir, jobs=4):
-    """Compile generated/<module>/ into <build>/ssd_aot_<module>.dll with the toolchain in toolchain_dir."""
+def build_modules(gen, modules, build, toolchain_dir, jobs=4, defines=()):
+    """Compile generated/<module>/ into <build>/ssd_aot_<module>.dll with the toolchain in toolchain_dir.
+    defines: extra preprocessor definitions for the generated code (RECOMP_BISECT)."""
     tc = environment(toolchain_dir)
     env = dict(os.environ, INCLUDE=tc['INCLUDE'], LIB=tc['LIB'])
     env['PATH'] = tc['path'] + os.pathsep + env.get('PATH', '')
@@ -244,7 +245,7 @@ def build_modules(gen, modules, build, toolchain_dir, jobs=4):
         for src in sorted(glob.glob(os.path.join(gen, m, '*.cpp'))):
             obj = os.path.join(obj_dir, os.path.basename(src)[:-4] + '.obj')
             if not os.path.exists(obj) or os.path.getmtime(obj) < max(newest, os.path.getmtime(src)):
-                work.append([tc['cl'], *CXXFLAGS, *GEN_FLAGS, '/I', RUNTIME, '/I', os.path.join(gen, m),
+                work.append([tc['cl'], *CXXFLAGS, *GEN_FLAGS, *(f'/D{d}' for d in defines), '/I', RUNTIME, '/I', os.path.join(gen, m),
                              '/c', src, '/Fo' + obj])
     entry = os.path.join(build, 'obj', 'aot_dll.obj')
     if not os.path.exists(entry) or os.path.getmtime(entry) < max(headers, os.path.getmtime(os.path.join(RUNTIME, 'aot_dll.cpp'))):
