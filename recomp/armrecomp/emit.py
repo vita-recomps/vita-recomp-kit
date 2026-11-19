@@ -139,7 +139,8 @@ class FunctionEmitter:
             out.append('        ctx->resume = 0;')
             out.append('        switch (at) {')
             out += [f'        case 0x{a:08x}u: goto L_{a:08x};' for a in resumes]
-            out.append('        default: unsupported(ctx, at);')
+            # the host's set_pc reads bit 0 as the Thumb bit (ctx->resume has none)
+            out.append(f'        default: unsupported(ctx, at{" | 1u" if f.thumb else ""});')
             out.append('        }')
             out.append('    }')
         stats = {'insns': 0, 'unsupported': 0, 'flags_dropped': 0, 'resumes': resumes}
