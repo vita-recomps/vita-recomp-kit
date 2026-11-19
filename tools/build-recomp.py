@@ -3,7 +3,7 @@
 
 usage:
   python -I build-recomp.py [--project DIR] [--modules eboot libc ...] [--jobs N] [--toolchain DIR]
-                            [--bisect]
+                            [--bisect] [--android]
 
   --modules    default: every folder in generated/ that has a funcs.h
   --jobs       parallel compiles of generated code (default 4; memory, not cores, is the usual
@@ -13,6 +13,8 @@ usage:
   --bisect     a RECOMP_BISECT build (every direct call goes through the host, so SSD_AOT_RANGE can
                bisect down to one function and SSD_AOT_DIFF can check every call), into
                build/recomp-llvm-bisect or build/recomp-bisect
+  --android    the modules for Android arm64 (.so), with the zig in --toolchain DIR (on Windows:
+               toolchain.py fetch toolchain-android-windows.json DIR), into build/recomp-android-zig
 """
 import argparse
 import glob
@@ -49,7 +51,10 @@ def main():
     ap.add_argument('--jobs', type=int, default=4)
     ap.add_argument('--toolchain')
     ap.add_argument('--bisect', action='store_true')
+    ap.add_argument('--android', action='store_true')
     a = ap.parse_args()
+    if a.android and not a.toolchain:
+        sys.exit('--android needs --toolchain DIR (zig: python -I toolchain.py fetch <lock file> DIR)')
 
     root = os.path.abspath(a.project)
     gen = os.path.join(root, 'generated')
@@ -60,8 +65,10 @@ def main():
     print(f'building {", ".join(modules)} ({a.jobs} jobs)')
     start = time.time()
     if a.toolchain:
-        build = os.path.join(root, 'build', 'recomp-llvm-bisect' if a.bisect else 'recomp-llvm')
-        toolchain.build_modules(gen, modules, build, a.toolchain, a.jobs, ('RECOMP_BISECT',) if a.bisect else ())
+        name = 'recomp-android-zig' if a.android else 'recomp-llvm'
+        build = os.path.join(root, 'build', name + ('-bisect' if a.bisect else ''))
+        toolchain.build_modules(gen, modules, build, a.toolchain, a.jobs, ('RECOMP_BISECT',) if a.bisect else (),
+                                android=a.android)
     else:
         build = build_with_cmake(root, gen, modules, a.jobs, a.bisect)
     dlls = sorted(f for f in glob.glob(os.path.join(build, toolchain.DLL_PREFIX + '*'))

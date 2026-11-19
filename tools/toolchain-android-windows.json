@@ -1,0 +1,14 @@
+{
+ "schema": "vita-recomp-kit.toolchain.v1",
+ "zig": "0.17.1",
+ "download_bytes": 100343666,
+ "payloads": [
+  {
+   "kind": "zig",
+   "file": "zig-x86_64-windows-0.17.1.zip",
+   "url": "https://ziglang.org/download/0.17.1/zig-x86_64-windows-0.17.1.zip",
+   "sha256": "b03f477a1943673e02aca0f570e8030dffd536ce1f45cbc4d3326ec31159562e",
+   "size": 100343666
+  }
+ ]
+}

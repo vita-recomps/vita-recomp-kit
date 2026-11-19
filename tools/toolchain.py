@@ -21,6 +21,12 @@ under MIT and LLVM's Apache licence (nothing to accept, no Xcode or Command Line
 it into <dir>/zig/, and the modules come out as ssd_aot_<module>.so (.dylib on macOS, ad-hoc signed by
 zig's linker, as Apple Silicon requires); zig keeps what it builds on first use (libc++) in <dir>/cache/.
   python -I toolchain.py fetch toolchain-linux.json|toolchain-macos.json <dir>
+
+Android (arm64-v8a), from any of the three: zig as well (toolchain-android-windows.json on Windows; the
+Linux and macOS lock files' zig serves there), with musl's headers and no C library linked: the modules
+bind to bionic's libc.so and libm.so when the game's APK loads them. recomp/runtime/aot_android.cpp
+brings the little a module needs from the C++ runtime (ss-delta docs/09-android.md).
+  python -I build-recomp.py --android --toolchain <dir>
 """
 import concurrent.futures, glob, hashlib, json, os, re, shutil, subprocess, sys, tarfile, tempfile, urllib.error, urllib.request, zipfile
 
@@ -62,6 +68,15 @@ ZIG_GEN_FLAGS = ['-O1', '-w', '-ffp-contract=off', '-DRECOMP_COUNT_INSNS']
 # Mach-O linker takes no export list: there, hidden visibility leaves the entry point and libc++'s
 # operator new/delete, which two-level namespaces keep from binding anything outside the module
 ZIG_EXPORTS = '{\n  global: armrecomp_aot_init;\n  local: *;\n};\n'
+# Android: arm64 with musl's headers (the functions a module calls have the same ABI in bionic), every
+# ARMv8 (LL/SC atomics inline: no outline atomics, which would want compiler-rt and getauxval), unwind
+# tables for the escapes the host throws through generated frames, no stack protector (bionic's guard
+# is not musl's). Linked without a C library: libc.so and libm.so stubs give the DT_NEEDED entries,
+# --eh-frame-hdr the PT_GNU_EH_FRAME the host's unwinder looks for, 16 KiB alignment the 16 KiB-page
+# devices since Android 15
+ANDROID_TARGET = ['-target', 'aarch64-linux-musl', '-mcpu=generic', '-mno-outline-atomics']
+ANDROID_CXXFLAGS = ['-fno-stack-protector', '-funwind-tables']
+ANDROID_LDFLAGS = ['-shared', '-nostdlib', '-Wl,--eh-frame-hdr', '-Wl,-z,max-page-size=16384', '-Wl,--gc-sections', '-s']
 # what a build needs from llvm-mingw: the real compiler (bin/clang.exe there is a wrapper that reads a
 # MinGW target from its name), the linker, the librarian, the DLLs they load and clang's headers
 LLVM_KEEP = re.compile(r'^[^/]+/(bin/(clang-\d+|ld\.lld|llvm-ar)\.exe|bin/[^/]+\.dll|lib/clang/\d+/include/.+)$')
@@ -178,21 +193,33 @@ def download(lock, cache):
 
 
 def fetch_zig(lock, dest):
-    """Linux and macOS: zig (MIT; LLVM's clang and libc++ inside, under their Apache licence) into
-    dest/zig."""
+    """Linux and macOS (and Android's modules from Windows): zig (MIT; LLVM's clang and libc++ inside,
+    under their Apache licence) into dest/zig."""
     download(lock, os.path.join(dest, 'downloads'))
     payload = next(p for p in lock['payloads'] if p['kind'] == 'zig')
     zig_dir = os.path.join(dest, 'zig')
     shutil.rmtree(zig_dir, ignore_errors=True)
     os.makedirs(zig_dir)
-    with tarfile.open(os.path.join(dest, 'downloads', payload['file'])) as t:
-        members = []
-        for m in t.getmembers():
-            parts = m.name.split('/', 1)
-            if len(parts) == 2 and parts[1]:
-                m.name = parts[1]  # without the top folder (zig-<arch>-<os>-<version>/)
-                members.append(m)
-        t.extractall(zig_dir, members, filter='tar')
+    archive = os.path.join(dest, 'downloads', payload['file'])
+    if archive.endswith('.zip'):
+        # Windows' zig: a zip, its files under zig-<arch>-windows-<version>/
+        with zipfile.ZipFile(archive) as z:
+            for info in z.infolist():
+                parts = info.filename.split('/', 1)
+                if len(parts) == 2 and parts[1] and not info.is_dir():
+                    target = os.path.join(zig_dir, *parts[1].split('/'))
+                    os.makedirs(os.path.dirname(target), exist_ok=True)
+                    with z.open(info) as src, open(target, 'wb') as out:
+                        shutil.copyfileobj(src, out)
+    else:
+        with tarfile.open(archive) as t:
+            members = []
+            for m in t.getmembers():
+                parts = m.name.split('/', 1)
+                if len(parts) == 2 and parts[1]:
+                    m.name = parts[1]  # without the top folder (zig-<arch>-<os>-<version>/)
+                    members.append(m)
+            t.extractall(zig_dir, members, filter='tar')
     with open(os.path.join(dest, 'toolchain.json'), 'w', encoding='utf-8', newline='\n') as f:
         json.dump({k: lock[k] for k in ('schema', 'zig')}, f, indent=1)
     print(f'{dest}: zig {lock["zig"]}')
@@ -316,14 +343,27 @@ def compile_all(work, env, jobs):
                 print(f'  {done}/{len(work)}', flush=True)
 
 
-def build_modules_zig(gen, modules, build, toolchain_dir, jobs=4, defines=()):
-    """Linux and macOS: generated/<module>/ into <build>/ssd_aot_<module>.so (.dylib) with zig's clang."""
-    zig = os.path.join(os.path.abspath(toolchain_dir), 'zig', 'zig')
+def zig_executable(toolchain_dir):
+    """The zig that fetch unpacked into toolchain_dir, or None."""
+    for name in ('zig', 'zig.exe'):
+        path = os.path.join(os.path.abspath(toolchain_dir), 'zig', name)
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def build_modules_zig(gen, modules, build, toolchain_dir, jobs=4, defines=(), android=False):
+    """Linux and macOS: generated/<module>/ into <build>/ssd_aot_<module>.so (.dylib) with zig's clang.
+    android: ssd_aot_<module>.so for Android arm64 instead, from any host."""
+    zig = zig_executable(toolchain_dir)
+    if not zig:
+        sys.exit(f'no zig in {toolchain_dir}: python -I toolchain.py fetch <lock file> {toolchain_dir}')
     # zig keeps the libc++ it builds on first use in its cache: the toolchain's own folder
     cache = os.path.join(os.path.abspath(toolchain_dir), 'cache')
     env = dict(os.environ, ZIG_GLOBAL_CACHE_DIR=cache, ZIG_LOCAL_CACHE_DIR=cache)
     headers = max(os.path.getmtime(h) for h in glob.glob(os.path.join(RUNTIME, '*.h')))
-    cxx = [zig, 'c++', *ZIG_TARGET, *ZIG_CXXFLAGS]
+    target = ANDROID_TARGET if android else ZIG_TARGET
+    cxx = [zig, 'c++', *target, *ZIG_CXXFLAGS, *(ANDROID_CXXFLAGS if android else [])]
 
     work = []
     for m in modules:
@@ -338,7 +378,28 @@ def build_modules_zig(gen, modules, build, toolchain_dir, jobs=4, defines=()):
     entry = os.path.join(build, 'obj', 'aot_dll.o')
     if not os.path.exists(entry) or os.path.getmtime(entry) < max(headers, os.path.getmtime(os.path.join(RUNTIME, 'aot_dll.cpp'))):
         work.append([*cxx, '-I', RUNTIME, '-c', os.path.join(RUNTIME, 'aot_dll.cpp'), '-o', entry])
+    extra = []  # Android: the C++ runtime's few pieces, and the stubs naming bionic's libraries
+    if android:
+        runtime = os.path.join(build, 'obj', 'aot_android.o')
+        source = os.path.join(RUNTIME, 'aot_android.cpp')
+        if not os.path.exists(runtime) or os.path.getmtime(runtime) < os.path.getmtime(source):
+            work.append([*cxx, '-c', source, '-o', runtime])
+        extra.append(runtime)
     compile_all(work, env, jobs)
+    if android:
+        stubs = os.path.join(build, 'stubs')
+        os.makedirs(stubs, exist_ok=True)
+        stub_c = os.path.join(stubs, 'stub.c')
+        with open(stub_c, 'w', encoding='utf-8', newline='\n') as f:
+            f.write('void vita_recomp_kit_stub(void) {}\n')
+        stub_libs = []
+        for name in ('libc.so', 'libm.so'):
+            stub = os.path.join(stubs, name)
+            err = run([zig, 'cc', *ANDROID_TARGET, '-shared', '-nostdlib', f'-Wl,-soname,{name}', '-o', stub, stub_c], env)
+            if err is not None:
+                sys.exit(f'{name} stub: linking failed\n{err}')
+            stub_libs.append(stub)
+        extra += ['-Wl,--no-as-needed', *stub_libs]
 
     exports = os.path.join(build, 'exports.map')
     with open(exports, 'w', encoding='utf-8', newline='\n') as f:
@@ -346,15 +407,19 @@ def build_modules_zig(gen, modules, build, toolchain_dir, jobs=4, defines=()):
     for m in modules:
         objs = sorted(glob.glob(os.path.join(build, 'obj', m, '*.o')))
         lib = os.path.join(build, f'libgen_{m}.a')
-        so = os.path.join(build, f'{DLL_PREFIX}{m}' + ('.dylib' if MACOS else '.so'))
+        so = os.path.join(build, f'{DLL_PREFIX}{m}' + ('.dylib' if MACOS and not android else '.so'))
         if os.path.exists(so) and os.path.getmtime(so) >= max(os.path.getmtime(o) for o in objs + [entry]):
             continue
         if os.path.exists(lib):
             os.remove(lib)  # ar adds to an existing archive
         err = run([zig, 'ar', 'rcs', lib, *objs], env)
         if err is None:
-            unused = ['-Wl,-dead_strip'] if MACOS else [f'-Wl,--version-script,{exports}', '-Wl,--gc-sections']
-            err = run([zig, 'c++', *ZIG_TARGET, '-shared', *unused, '-s', '-o', so, entry, lib], env)
+            if android:
+                err = run([zig, 'c++', *ANDROID_TARGET, *ANDROID_LDFLAGS, f'-Wl,--version-script,{exports}',
+                           '-o', so, entry, lib, *extra], env)
+            else:
+                unused = ['-Wl,-dead_strip'] if MACOS else [f'-Wl,--version-script,{exports}', '-Wl,--gc-sections']
+                err = run([zig, 'c++', *ZIG_TARGET, '-shared', *unused, '-s', '-o', so, entry, lib], env)
         if err is not None:
             sys.exit(f'{m}: linking failed\n{err}')
     # zig's cache holds a copy of every object (1.5 GB for Soul Sacrifice Delta) besides libc++:
@@ -362,13 +427,13 @@ def build_modules_zig(gen, modules, build, toolchain_dir, jobs=4, defines=()):
     shutil.rmtree(cache, ignore_errors=True)
 
 
-def build_modules(gen, modules, build, toolchain_dir, jobs=4, defines=()):
+def build_modules(gen, modules, build, toolchain_dir, jobs=4, defines=(), android=False):
     """Compile generated/<module>/ into <build>/ssd_aot_<module>.dll (Windows; .so or .dylib with zig on
-    Linux and macOS)
+    Linux and macOS; android: .so for Android arm64, with zig from any host)
     with the toolchain in toolchain_dir. defines: extra preprocessor definitions for the generated
     code (RECOMP_BISECT)."""
-    if os.path.exists(os.path.join(toolchain_dir, 'zig', 'zig')):
-        return build_modules_zig(gen, modules, build, toolchain_dir, jobs, defines)
+    if android or zig_executable(toolchain_dir):
+        return build_modules_zig(gen, modules, build, toolchain_dir, jobs, defines, android)
     tc = environment(toolchain_dir)
     env = dict(os.environ, INCLUDE=tc['INCLUDE'], LIB=tc['LIB'])
     env['PATH'] = tc['path'] + os.pathsep + env.get('PATH', '')

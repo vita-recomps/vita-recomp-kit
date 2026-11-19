@@ -20,6 +20,8 @@ game.json:
     "dist_readme_macos", "dist_files_macos"   the same on macOS (default: none of the Linux files)
     "release_files": ["recomplauncher.json"]  project files copied as they are to the top of a
                                               release's folder (make-setup.py), on every platform
+    "android_package": "io.github.vitarecomps.shinobido2"   the game's APK (android.py; default
+                                              io.github.vitarecomps.<id without other characters>)
   }
 """
 import json
@@ -76,6 +78,9 @@ class Project:
             self.dist_readme, self.dist_files = g.get('dist_readme_linux', g.get('dist_readme')), g.get('dist_files_linux', {})
         self.release_files = g.get('release_files', [])
         self.exe_name = self.id + EXE_SUFFIX
+        # the game's APK, as game-frontend/android/build.gradle names it by default
+        self.android_package = g.get('android_package') or 'io.github.vitarecomps.' + ''.join(
+            c for c in self.id.lower() if c.isalnum())
 
     def installed_title(self, fs):
         """The title ID of the game installed in a Vita file system (ux0/app/<id>/eboot.bin), or None."""
