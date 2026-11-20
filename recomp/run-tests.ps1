@@ -64,7 +64,11 @@ try {
         $ErrorActionPreference = 'Continue'
         cmake -S recomp -B $build -G Ninja -DCMAKE_BUILD_TYPE=Release "-DRECOMP_MODULES=" "-DRECOMP_TEST_MODULE=$m" `
             "-DGENERATED_DIR=$GeneratedDir" "-DVITA3K_SRC=$Vita3kSrc" "-DVITA3K_BUILD=$Vita3kBuild" | Out-Null
+        # (a build folder configured from another source folder, such as the old recomp\, fails here:
+        # delete it)
+        if ($LASTEXITCODE) { throw "cmake could not configure $build" }
         cmake --build $build --target recomp_tests | Select-String -Pattern ' error ' | Select-Object -First 5
+        if ($LASTEXITCODE) { throw "recomp_tests did not build for $m (in $build)" }
         $ErrorActionPreference = 'Stop'
         # under a memory and time ceiling: a runaway native test once hung the machine
         & "$PSScriptRoot\tests\guarded-run.ps1" "$build\recomp_tests.exe" "$build\tests.txt" -Rest $Iterations, '*', $FunctionIterations

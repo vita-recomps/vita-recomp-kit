@@ -99,6 +99,51 @@ inline bool cas(uint32_t a, T expected, T desired) {
 }
 #endif
 
+// --- exclusive monitor ----------------------------------------------------------------------------
+
+// ARM's strex fails once anything has written the reserved address since the ldrex (and after any
+// exception or preemption); a compare-and-swap alone succeeds whenever memory holds the value again.
+// Lock-free queues whose links go back to an earlier value then break (ABA): libult's enqueue reads
+// the tail node's next as (0, 0), stalls, and meanwhile another thread links a node there, the tail
+// moves on, and a dequeue pops that node and resets its next to (0, 0); the stalled thread's CAS then
+// links its node onto one that left the queue, and a later dequeue finds no packet (Queue.h:797
+// "packet != NULL", ss-delta 09-android). As in dynarmic's exclusive monitor, a successful exclusive
+// store therefore also breaks every other reservation of its granule: ldrex records the version of
+// its granule (8 bytes, hashed into a table), strex succeeds only while that version is unchanged
+// and memory still holds the value ldrex read, and bumps the version. Bit 0 of an entry locks it
+// during a store. Plain stores still don't break reservations (nor do they in dynarmic). One table
+// per module: exclusives on the same address from two modules fall back to the value check.
+inline constexpr uint32_t EXCL_GRANULES = 4096;
+inline std::atomic<uint32_t> g_excl_versions[EXCL_GRANULES];
+
+inline std::atomic<uint32_t> &excl_granule(uint32_t addr) {
+    return g_excl_versions[(addr >> 3) & (EXCL_GRANULES - 1)];
+}
+
+// ldrex: arms the monitor for addr (before the load, so a store between the two only causes a retry);
+// excl_valid keeps the granule's version with bit 0 set, so it is nonzero while armed
+inline void excl_reserve(GuestContext *ctx, uint32_t addr) {
+    ctx->excl_addr = addr;
+    ctx->excl_valid = excl_granule(addr).load(std::memory_order_acquire) | 1u;
+}
+
+// strex: stores value if the monitor is still armed for addr; disarms it either way
+template <typename T>
+inline bool excl_store(GuestContext *ctx, uint32_t addr, T value) {
+    const uint32_t armed = ctx->excl_valid;
+    ctx->excl_valid = 0;
+    if (!armed || ctx->excl_addr != addr)
+        return false;
+    std::atomic<uint32_t> &granule = excl_granule(addr);
+    uint32_t version = armed & ~1u;
+    // fails when another exclusive store to the granule succeeded (or is under way) since the ldrex
+    if (!granule.compare_exchange_strong(version, version | 1u, std::memory_order_acquire))
+        return false;
+    const bool ok = cas<T>(addr, T(ctx->excl_value), value);
+    granule.store(ok ? version + 2u : version, std::memory_order_release);
+    return ok;
+}
+
 // --- helpers used by generated code -------------------------------------------------------------
 
 // a direct call to another recompiled function; RECOMP_BISECT builds route it through the host,

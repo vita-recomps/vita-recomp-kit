@@ -649,20 +649,20 @@ def exclusive(cx, base):
         addr, _, _ = mem_address(cx, ops[1])
         cx.emit('{')
         cx.emit(f'const uint32_t addr = {addr};')
+        cx.emit('excl_reserve(ctx, addr);')
         cx.emit(f'const uint32_t v = uint32_t({fn}(addr));')
-        cx.emit('ctx->excl_addr = addr; ctx->excl_valid = 1; ctx->excl_value = v;')
+        cx.emit('ctx->excl_value = v;')
         cx.emit(f'ctx->r[{rt}] = v;')
         cx.emit('}')
     elif base in ('strex', 'strexb', 'strexh'):
         fn, ty = {'strex': ('wr32', 'uint32_t'), 'strexb': ('wr8', 'uint8_t'), 'strexh': ('wr16', 'uint16_t')}[base]
         rd, rt = cx.ridx(ops[0]), cx.ridx(ops[1])
         addr, _, _ = mem_address(cx, ops[2])
-        # the store succeeds when the monitor is armed for this address and memory still holds the
-        # value ldrex read: a host compare-and-swap, as Vita3K's dynarmic does it (value-based)
+        # the store succeeds when the monitor is still armed for this address (no other exclusive
+        # store to it since) and memory still holds the value ldrex read (runtime excl_store)
         cx.emit('{')
         cx.emit(f'const uint32_t addr = {addr};')
-        cx.emit(f'const uint32_t ok = ctx->excl_valid && ctx->excl_addr == addr && cas<{ty}>(addr, {ty}(ctx->excl_value), {ty}({cx.r(rt)}));')
-        cx.emit('ctx->excl_valid = 0;')
+        cx.emit(f'const uint32_t ok = excl_store<{ty}>(ctx, addr, {ty}({cx.r(rt)}));')
         cx.emit(f'ctx->r[{rd}] = ok ? 0u : 1u;')
         cx.emit('}')
     elif base == 'ldrexd':
@@ -670,8 +670,9 @@ def exclusive(cx, base):
         addr, _, _ = mem_address(cx, ops[2])
         cx.emit('{')
         cx.emit(f'const uint32_t addr = {addr};')
+        cx.emit('excl_reserve(ctx, addr);')
         cx.emit('const uint64_t v = rd64(addr);')
-        cx.emit('ctx->excl_addr = addr; ctx->excl_valid = 1; ctx->excl_value = v;')
+        cx.emit('ctx->excl_value = v;')
         cx.emit(f'ctx->r[{r1}] = uint32_t(v);')
         cx.emit(f'ctx->r[{r2}] = uint32_t(v >> 32);')
         cx.emit('}')
@@ -680,8 +681,7 @@ def exclusive(cx, base):
         addr, _, _ = mem_address(cx, ops[3])
         cx.emit('{')
         cx.emit(f'const uint32_t addr = {addr};')
-        cx.emit(f'const uint32_t ok = ctx->excl_valid && ctx->excl_addr == addr && cas<uint64_t>(addr, ctx->excl_value, (uint64_t({cx.r(r2)}) << 32) | {cx.r(r1)});')
-        cx.emit('ctx->excl_valid = 0;')
+        cx.emit(f'const uint32_t ok = excl_store<uint64_t>(ctx, addr, (uint64_t({cx.r(r2)}) << 32) | {cx.r(r1)});')
         cx.emit(f'ctx->r[{rd}] = ok ? 0u : 1u;')
         cx.emit('}')
     elif base == 'clrex':
