@@ -42,13 +42,7 @@ ANDROID_STAGES = [
 ]
 
 
-def find_licence(path):
-    """A pkg's licence next to it, as dumps keep it: work.bin, or a single .rif."""
-    folder = os.path.dirname(path)
-    if os.path.exists(os.path.join(folder, 'work.bin')):
-        return os.path.join(folder, 'work.bin')
-    rifs = [f for f in os.listdir(folder) if f.lower().endswith('.rif')]
-    return os.path.join(folder, rifs[0]) if len(rifs) == 1 else ''
+find_licence = dumpinfo.find_licence  # a pkg's licence next to it
 
 
 class Part:
@@ -173,7 +167,8 @@ class Window:
         self.addon_row = 4
         self.add_button = ttk.Button(dump, text='Add an add-on (DLC)...', command=self.add_addon)
         self.add_button.grid(row=100, column=1, sticky='w', pady=(4, 0))
-        self.hint = 'The update and add-ons are optional. A licence can also be a zRIF typed in.'
+        self.hint = ('The update and add-ons are optional. A licence can also be a zRIF typed in. Once the '
+                     'game is built, add-ons can be added alone.')
         self.dump_note = ttk.Label(dump, foreground='gray', text=self.hint, wraplength=560, justify='left')
         self.dump_note.grid(row=101, column=1, sticky='w')
         self.check_pending = None
@@ -294,8 +289,14 @@ class Window:
 
     def start(self):
         parts = [p for p in self.parts + self.addons]
-        if not parts[0].path.get().strip():
-            messagebox.showerror('Setup', 'Choose the game first: its pkg, folder, zip or vpk.')
+        ids = [self.game['title_id']] + self.game.get('other_title_ids', [])
+        built = any(os.path.exists(os.path.join(self.out, 'fs', 'ux0', 'app', i, 'eboot.bin')) for i in ids)
+        # the game built already: add-ons alone are installed (setup.py builds nothing again)
+        addons_only = built and not any(p.path.get().strip() for p in self.parts) and \
+            any(p.path.get().strip() for p in self.addons)
+        if not parts[0].path.get().strip() and not addons_only:
+            messagebox.showerror('Setup', 'Choose the game first: its pkg, folder, zip or vpk.'
+                                 + (' (Or only add-ons, to add them to the game built here.)' if built else ''))
             return
         for p in parts:
             path = p.path.get().strip().strip('"')
@@ -305,8 +306,6 @@ class Window:
         if not self.accepted.get():
             messagebox.showerror('Setup', 'The compiler needs Microsoft\'s licence accepted.')
             return
-        ids = [self.game['title_id']] + self.game.get('other_title_ids', [])
-        built = any(os.path.exists(os.path.join(self.out, 'fs', 'ux0', 'app', i, 'eboot.bin')) for i in ids)
         # only the update, not the game: the install would fail after the downloads (an update alone
         # is fine over a built game)
         missing = None if built else dumpinfo.missing_game(
@@ -314,9 +313,10 @@ class Window:
         if missing:
             messagebox.showerror('Setup', f'The game can\'t be installed from this: {missing}')
             return
-        if built and \
+        if built and not addons_only and \
                 not messagebox.askyesno('Setup', 'The game is built already. Build it again from this dump? '
-                                        '(Saves and settings are kept.)'):
+                                        '(Saves and settings are kept. To add only an add-on, leave the '
+                                        'game\'s rows empty.)'):
             return
         args = [a for p in parts for a in p.args()]
         # Windows: python.exe beside the pythonw.exe that runs the window, for a console the setup's

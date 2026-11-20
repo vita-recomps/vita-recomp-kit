@@ -1,5 +1,6 @@
 """What a dump holds, read from its param.sfo files: the game, its update (patch) and add-ons, with
-versions and whether a licence (sce_sys/package/work.bin, as NoNpDrm dumps keep it) is inside. For the
+versions and whether a licence is inside (sce_sys/package/work.bin, as NoNpDrm dumps keep it, or a
+.rif in license/addcont/<title>/<dir>/ or license/app/<title>/ when the dump is laid out as ux0). For the
 setup, so it doesn't ask for parts the dump already has. Zips, vpks and folders; a pkg is encrypted
 and stays unknown (None).
 
@@ -47,11 +48,60 @@ def _entry(sfo, has_licence):
             'version': str(sfo.get('APP_VER') or sfo.get('VERSION') or ''), 'licence': has_licence}
 
 
+def ux0_licence_dir(sfo):
+    """Where a NoNpDrm dump laid out as on a Vita's ux0: keeps this part's licence instead of
+    sce_sys/package/work.bin, relative to the folder above app/ or addcont/; None for other parts."""
+    tid, cid = str(sfo.get('TITLE_ID', '')), str(sfo.get('CONTENT_ID', ''))
+    if not tid:
+        return None
+    if sfo.get('CATEGORY') == 'ac' and len(cid) > 20:
+        return f'license/addcont/{tid}/{cid[20:]}/', f'addcont/{tid}/{cid[20:]}/'
+    if str(sfo.get('CATEGORY', '')).startswith('gd'):
+        return f'license/app/{tid}/', f'app/{tid}/'
+    return None
+
+
+def find_licence(path):
+    """A pkg's licence next to it, as dumps keep it: work.bin, or a single .rif ('' when there's none)."""
+    folder = os.path.dirname(os.path.abspath(path))
+    if os.path.exists(os.path.join(folder, 'work.bin')):
+        return os.path.join(folder, 'work.bin')
+    try:
+        rifs = [f for f in os.listdir(folder) if f.lower().endswith('.rif')]
+    except OSError:
+        return ''
+    return os.path.join(folder, rifs[0]) if len(rifs) == 1 else ''
+
+
+def pkg_sfo(path):
+    """A PS Vita pkg's param.sfo, which its header keeps unencrypted (info block 14: offset, size), as
+    Vita3K's install_pkg reads it; {} for anything else."""
+    with open(path, 'rb') as f:
+        head = f.read(0x20)
+        if len(head) < 0x20 or head[:4] != b'\x7fPKG':
+            return {}
+        info_offset, info_count = struct.unpack_from('>II', head, 8)
+        for _ in range(min(info_count, 64)):
+            f.seek(info_offset)
+            block = f.read(16)
+            if len(block) < 16:
+                return {}
+            kind, size, a, b = struct.unpack('>IIII', block)
+            if kind == 14 and 0 < b <= 1 << 16:
+                f.seek(a)
+                return parse_sfo(f.read(b))
+            info_offset += 8 + size
+    return {}
+
+
 def inspect(path, max_depth=4):
-    """The parts in a zip, vpk or folder: [{'kind', 'title_id', 'version', 'licence'}], or None when
-    it can't be read (a pkg, a missing path, a broken archive)."""
+    """The parts in a zip, vpk, folder or pkg: [{'kind', 'title_id', 'version', 'licence'}], or None
+    when it can't be read (a missing path, a broken archive). A pkg's licence is the one beside it."""
     parts = []
     try:
+        if os.path.isfile(path) and path.lower().endswith('.pkg'):
+            entry = _entry(pkg_sfo(path), bool(find_licence(path)))
+            return [entry] if entry else None
         if os.path.isdir(path):
             base = os.path.abspath(path)
             for root, dirs, files in os.walk(base):
@@ -62,7 +112,16 @@ def inspect(path, max_depth=4):
                     name = next(f for f in files if f.lower() == 'param.sfo')
                     with open(os.path.join(root, name), 'rb') as f:
                         sfo = parse_sfo(f.read(1 << 16))
-                    entry = _entry(sfo, os.path.exists(os.path.join(root, 'package', 'work.bin')))
+                    has = os.path.exists(os.path.join(root, 'package', 'work.bin'))
+                    dirs = ux0_licence_dir(sfo)
+                    content = os.path.dirname(root)
+                    if not has and dirs and content.replace(os.sep, '/').lower().endswith(dirs[1].rstrip('/').lower()):
+                        top = content
+                        for _ in range(dirs[1].count('/')):
+                            top = os.path.dirname(top)
+                        lic = os.path.join(top, *dirs[0].split('/'))
+                        has = os.path.isdir(lic) and any(f.lower().endswith('.rif') for f in os.listdir(lic))
+                    entry = _entry(sfo, has)
                     if entry:
                         parts.append(entry)
             return parts
@@ -73,7 +132,14 @@ def inspect(path, max_depth=4):
                 for n in names:
                     if n.lower().endswith('sce_sys/param.sfo') or n.lower() == 'sce_sys/param.sfo':
                         prefix = n[:-len('param.sfo')]
-                        entry = _entry(parse_sfo(z.read(n)), (prefix + 'package/work.bin').lower() in lower)
+                        sfo = parse_sfo(z.read(n))
+                        has = (prefix + 'package/work.bin').lower() in lower
+                        dirs = ux0_licence_dir(sfo)
+                        content = prefix[:-len('sce_sys/')]
+                        if not has and dirs and content.lower().endswith(dirs[1].lower()):
+                            lic = (content[:-len(dirs[1])] + dirs[0]).lower()
+                            has = any(x.startswith(lic) and x.endswith('.rif') for x in lower)
+                        entry = _entry(sfo, has)
                         if entry:
                             parts.append(entry)
             return parts
@@ -98,8 +164,8 @@ def summary(parts, title_ids):
 
 def missing_game(paths, title_ids):
     """For a setup's parts (paths, in the order given): why the game can't be installed from them when
-    none holds the game itself (an update-only folder, say), else None. A pkg, or anything else
-    inspect() can't read, may be the game: no message then."""
+    none holds the game itself (an update-only folder, say), else None. Anything inspect() can't read
+    may be the game: no message then."""
     updates = []
     for path in paths:
         found = inspect(path)

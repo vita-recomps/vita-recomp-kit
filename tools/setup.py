@@ -16,8 +16,11 @@ its own --dump parts on as --install:
   python -I setup/kit/tools/setup.py --android [--console] [--push-only] [--accept-android-sdk-license]
             [--serial S | --pair HOST:PORT --code CODE | --connect HOST:PORT] [--apk FILE] [--cache DIR]
 
-  --install   repeat for each part, in order: the game, then its update, then add-ons
-  --cache     keep the downloads in DIR, shared by every game's setup and kept for the next time
+  --install   repeat for each part, in order: the game, then its update, then add-ons. A pkg without
+              --license or --zrif takes the licence beside it (work.bin, or a single .rif). When the
+              game is built here by this release and the parts add only add-ons (the game's own parts
+              already installed, or left out), only the add-ons are installed: no download, no build
+  --cache    keep the downloads in DIR, shared by every game's setup and kept for the next time
               (default: inside setup/, deleted after a successful build)
   --accept-microsoft-license   Windows only: the compiler's C++ runtime and SDK
   --shortcut  Windows: a shortcut on the desktop. Linux: an entry in the applications menu (which
@@ -312,6 +315,106 @@ def ask_parts(game):
                 parts += (['--license', os.path.abspath(lic)] if os.path.exists(lic) else ['--zrif', lic])
 
 
+def part_groups(parts):
+    """The --install parts as [[path, its --license/--zrif args ...], ...]."""
+    groups = []
+    for k in range(0, len(parts) - 1, 2):
+        if parts[k] == '--install':
+            groups.append([parts[k + 1]])
+        elif groups:
+            groups[-1] += [parts[k], parts[k + 1]]
+    return groups
+
+
+def with_pkg_licences(parts):
+    """A pkg given without its licence takes the one beside it, as dumps keep it (work.bin, a .rif)."""
+    out = []
+    for g in part_groups(parts):
+        out += ['--install'] + g
+        if g[0].lower().endswith('.pkg') and len(g) == 1:
+            lic = dumpinfo.find_licence(g[0])
+            if lic:
+                print(f'{os.path.basename(g[0])}: its licence {lic}')
+                out += ['--license', lic]
+    return out
+
+
+def stamp_path(game, out):
+    """What built the game in this folder: the executable's SHA-256 (a new release brings a new one)."""
+    return os.path.join(out, game['id'], 'build.json')
+
+
+def sha256(path):
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for block in iter(lambda: f.read(1 << 20), b''):
+            h.update(block)
+    return h.hexdigest()
+
+
+def built_by_this_release(game, out, exe):
+    try:
+        with open(stamp_path(game, out), encoding='utf-8') as f:
+            return json.load(f).get('exe_sha256') == sha256(exe)
+    except (OSError, ValueError):
+        return False
+
+
+def installed_version(out, title_id):
+    """The newest version of title_id installed in the folder's Vita file system (the game or its
+    update), as (1, 30); None when it isn't installed."""
+    versions = []
+    for sub in ('app', 'patch'):
+        sfo = os.path.join(out, 'fs', 'ux0', sub, title_id, 'sce_sys', 'param.sfo')
+        if os.path.exists(sfo):
+            with open(sfo, 'rb') as f:
+                versions.append(dumpinfo.version(str(dumpinfo.parse_sfo(f.read(1 << 16)).get('APP_VER', ''))))
+    versions = [v for v in versions if v]
+    return max(versions) if versions else None
+
+
+def addon_parts(parts, out):
+    """The parts to install when the game is built: those holding add-ons, if every game or update in
+    the parts is installed already (at that version or newer). None when something else is new (a
+    full build) or no part holds an add-on (the player asked to build again)."""
+    addons = []
+    for g in part_groups(parts):
+        found = dumpinfo.inspect(g[0])
+        if not found:
+            return None
+        for e in found:
+            if e['kind'] in ('game', 'update'):
+                have, want = installed_version(out, e['title_id']), dumpinfo.version(e['version'])
+                if not have or not want or want > have:
+                    return None
+        if any(e['kind'] == 'add-on' for e in found):
+            addons.append(g)
+    return addons or None
+
+
+def note_other_region_addons(parts, out, ids):
+    """An add-on for another title than the game's (the other region's pack) installs for that title,
+    which the game never reads: said, not refused."""
+    games = {t for t in ids if installed_version(out, t)}
+    entries = [e for g in part_groups(parts) for e in (dumpinfo.inspect(g[0]) or [])]
+    games |= {e['title_id'] for e in entries if e['kind'] == 'game'}
+    for e in entries:
+        if e['kind'] == 'add-on' and games and e['title_id'] not in games:
+            print(f'Note: an add-on for {e["title_id"]}, but the game is {" or ".join(sorted(games))}: it is '
+                  f'installed for {e["title_id"]}, and this game won\'t use it (each region\'s game reads only '
+                  f'its own add-ons)')
+
+
+def warn_encrypted_addons(out):
+    """Add-ons installed as dumped, still encrypted (no licence found): the game can't read them."""
+    for files_db in glob.glob(os.path.join(out, 'fs', 'ux0', 'addcont', '*', '*', 'sce_pfs', 'files.db')):
+        content = os.path.dirname(os.path.dirname(files_db))
+        print(f'Warning: the add-on in {content} is still encrypted: its licence wasn\'t found (work.bin in '
+              f'its sce_sys/package, a .rif in the dump\'s license/addcont/..., or a pkg\'s licence beside '
+              f'it). Install it again with its licence.')
+
+
 def remove(path):
     """A file or folder, if there."""
     if os.path.isdir(path):
@@ -428,6 +531,7 @@ def main():
     print(f'{game["name"]}: setup')
     if interactive:
         parts = ask_parts(game)
+    parts = with_pkg_licences(parts)
     out = OUT
     # a dump without the game itself (only its update) fails at the install: said before the downloads.
     # An update alone is fine when the game is installed in the folder already.
@@ -437,6 +541,24 @@ def main():
                                         ids)
         if missing:
             sys.exit(f'Not installed: {missing}')
+    note_other_region_addons(parts, out, ids)
+
+    # the game built here by this release, and the parts bring only add-ons (a launcher's setup run
+    # again for a new add-on): those installed, nothing downloaded or built again
+    addons = addon_parts(parts, out) if parts and not opts.get('--android') and \
+        built_by_this_release(game, out, exe) else None
+    if addons:
+        print(f'\nThe game is built here already: installing the add-on{"s" if len(addons) > 1 else ""} only')
+        for n, g in enumerate(addons):
+            step(0.10 + 0.85 * n / len(addons), 'Installing the add-ons')
+            print(f'installing {os.path.basename(g[0])}')
+            cmd = [exe, '--game', out, '--vita-fs', os.path.join(out, 'fs'), '--install-content'] + g
+            if run_logged(cmd):
+                sys.exit(f'installing {g[0]} failed (the game\'s log: {os.path.join(out, game["id"], "vita3k.log")})')
+        warn_encrypted_addons(out)
+        print('\ndone: the add-ons are installed')
+        step(1.0, 'Done')
+        return
     # the downloads: inside setup/ and gone after the build, unless --cache keeps them elsewhere
     cache = os.path.abspath(opts['--cache']) if opts.get('--cache') else os.path.join(SETUP, 'downloads')
     work = os.path.join(SETUP, 'work')
@@ -496,6 +618,11 @@ def main():
     remove(os.path.join(out, game['id'], 'elfdumps'))
     if not opts.get('--cache'):
         remove(cache)
+    warn_encrypted_addons(out)
+    # what built it: a later run with only add-ons installs them without building again
+    os.makedirs(os.path.dirname(stamp_path(game, out)), exist_ok=True)
+    with open(stamp_path(game, out), 'w', encoding='utf-8') as f:
+        json.dump({'exe_sha256': sha256(exe), 'built': time.strftime('%Y-%m-%d %H:%M:%S')}, f, indent=1)
 
     if opts.get('--shortcut') and WINDOWS:
         lnk = desktop_shortcut(exe, game['name'])
