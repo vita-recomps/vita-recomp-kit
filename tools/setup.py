@@ -13,6 +13,8 @@ its own --dump parts on as --install:
   python -I setup/kit/tools/setup.py [--install <pkg|folder|zip|vpk> [--license <work.bin|rif> | --zrif Z]] ...
             [--cache DIR] [--accept-microsoft-license] [--jobs N] [--shortcut] [--steam] [--progress] [--exe FILE]
   python -I setup/kit/tools/setup.py --add-to-steam
+  python -I setup/kit/tools/setup.py --android [--console] [--push-only] [--accept-android-sdk-license]
+            [--serial S | --pair HOST:PORT --code CODE | --connect HOST:PORT] [--apk FILE] [--cache DIR]
 
   --install   repeat for each part, in order: the game, then its update, then add-ons
   --cache     keep the downloads in DIR, shared by every game's setup and kept for the next time
@@ -27,11 +29,21 @@ its own --dump parts on as --install:
   --progress  with --install: also lines "progress <0-1> <text>" for a launcher's progress bar
               (RecompLauncher's setup step, recomplauncher.json "prepare")
   --exe       the game's executable (default: the one in the game's folder; macOS: inside its app)
+  --android   the game on an Android device too (the release's APK, setup/android/<id>.apk): its
+              modules built for Android (zig, as above; from the game already built here, or with
+              --install from the dump in the same run), then the APK, the game's files and the modules
+              copied to the device over adb, which is downloaded from Google (Android SDK Platform-
+              Tools, under Google's licence: --accept-android-sdk-license). The device needs USB
+              debugging (and the cable), or wireless debugging (--pair with the address and code it
+              shows; adb then finds it). Saves already on the device stay. Without --console and
+              device options, a window asks
+  --push-only  with --android: copy what an earlier --android built (<game folder>/android/) again
 
 Exit codes: 0 built (the game then starts), 2 built but the window was closed without Play, 1 failed
 or cancelled. The output of a build (from the window too) is also in <game folder>/<id>/setup.log,
 next to the game's own log, so a launcher's crash report carries it.
 """
+import glob
 import json
 import os
 import plistlib
@@ -373,10 +385,12 @@ def main():
     opts = {}
     j = 0
     while j < len(rest):
-        if rest[j] in ('--cache', '--jobs', '--exe') and j + 1 < len(rest):
+        if rest[j] in ('--cache', '--jobs', '--exe', '--serial', '--pair', '--code', '--connect', '--apk') \
+                and j + 1 < len(rest):
             opts[rest[j]] = rest[j + 1]
             j += 2
-        elif rest[j] in ('--accept-microsoft-license', '--shortcut', '--steam', '--add-to-steam', '--console', '--progress'):
+        elif rest[j] in ('--accept-microsoft-license', '--shortcut', '--steam', '--add-to-steam', '--console',
+                         '--progress', '--android', '--accept-android-sdk-license', '--push-only'):
             opts[rest[j]] = True
             j += 1
         else:
@@ -389,9 +403,16 @@ def main():
                      '"Add a Non-Steam Game"')
         print(add_to_steam(desktop_entry(exe, game, OUT, False)[0]))
         return
-    if not parts and not opts.get('--console'):
+    device_opts = [k for k in ('--serial', '--pair', '--connect') if opts.get(k)]
+    if opts.get('--android') and not parts and not opts.get('--console') and not device_opts:
+        import setupgui
+        sys.exit(setupgui.AndroidWindow(game, os.path.abspath(__file__), OUT, exe).run())
+    if not parts and not opts.get('--console') and not opts.get('--android'):
         import setupgui
         sys.exit(setupgui.Window(game, os.path.abspath(__file__), OUT, exe, lock.get('microsoft_license')).run())
+    if opts.get('--android') and not parts:
+        # the game on a device, from what this folder holds: no firmware, no PC compiler, no dump
+        return android(game, opts, exe, platform, interactive=bool(opts.get('--console')))
     interactive = not parts
     # the window runs this same setup in a hidden console, so the log has its output too
     log_path = os.path.join(OUT, game['id'], 'setup.log')
@@ -436,12 +457,13 @@ def main():
     if any(have.get(k) != lock[k] for k in pinned):
         step(0.10, 'Downloading the compiler')
         toolchain.fetch(lock_path, tc_dir, True)
+    android_tc = android_toolchain(cache) if opts.get('--android') else ''
 
     print(f'\n2/3 installing the game, recompiling and compiling its code in {out} (several minutes)')
     firmware = [os.path.join(cache, 'firmware', 'PSVUPDAT.PUP'), os.path.join(cache, 'firmware', 'PSP2UPDAT.PUP')]
     install = py + [os.path.join(TOOLS, 'install-game.py'), '--project', GAME, '--bin', out,
                     '--exe', exe, '--work', work, '--toolchain', tc_dir, '--out', out, '--jobs', jobs,
-                    '--firmware', *firmware] + parts
+                    '--firmware', *firmware] + parts + (['--android', android_tc] if android_tc else [])
     # install-game.py's output passed on (and into the log), with --progress a progress line at each of its steps
     steps = [('installing', 0.30, 'Installing the game'),
              ('running the game', 0.40, 'Running the game once to read its code'),
@@ -481,6 +503,91 @@ def main():
             print(add_to_steam(desktop))
     print(f'\n3/3 done: the game is built in {out}')
     step(1.0, 'Done')
+    if opts.get('--android'):
+        android(game, opts, exe, platform, interactive, built=True)
+
+
+def android_toolchain(cache):
+    """zig for the Android modules: Windows' own lock file (the PC compiler there is clang-cl), the
+    PC's zig on Linux and macOS; fetched into the downloads when not there yet."""
+    if WINDOWS:
+        lock_path, dest = os.path.join(TOOLS, 'toolchain-android-windows.json'), os.path.join(cache, 'toolchain-android')
+    else:
+        lock_path = os.path.join(TOOLS, f'toolchain-{"macos" if MACOS else "linux"}.json')
+        dest = os.path.join(cache, f'toolchain-{"macos" if MACOS else "linux"}')
+    with open(lock_path, encoding='utf-8') as f:
+        lock = json.load(f)
+    have = {}
+    if os.path.exists(os.path.join(dest, 'toolchain.json')):
+        with open(os.path.join(dest, 'toolchain.json'), encoding='utf-8') as f:
+            have = json.load(f)
+    if have.get('zig') != lock['zig']:
+        print(f'downloading zig {lock["zig"]} for the Android modules ({lock["download_bytes"] / 2**20:,.0f} MB)')
+        toolchain.fetch(lock_path, dest, True)
+    return dest
+
+
+def android(game, opts, exe, platform, interactive, built=False):
+    """--android: the modules for Android (unless built just now with the PC's, or --push-only), then the
+    APK, the game's files and the modules onto the device (android.py push)."""
+    import android as droid
+    if not built:
+        log_path = os.path.join(OUT, game['id'], 'setup.log')
+        if start_log(log_path):
+            print(f'{time.strftime("%Y-%m-%d %H:%M:%S")} {game["name"]} setup for Android on {platform} '
+                  f'({sys.platform}, Python {sys.version.split()[0]}); log: {log_path}')
+    apk = os.path.abspath(opts['--apk']) if opts.get('--apk') else os.path.join(SETUP, 'android', game['id'] + '.apk')
+    if not os.path.exists(apk):
+        sys.exit(f'{apk} does not exist: this release has no APK for Android (download it, then pass --apk)')
+    cache = os.path.abspath(opts['--cache']) if opts.get('--cache') else os.path.join(SETUP, 'downloads')
+    work = os.path.join(SETUP, 'work')
+    modules = os.path.join(OUT, 'android')
+    py = [sys.executable, '-I', '-u']
+
+    accepted = bool(opts.get('--accept-android-sdk-license'))
+    if not accepted:
+        with open(droid.LOCK, encoding='utf-8') as f:
+            url = json.load(f)['license_url']
+        print('\nThe game is copied to the device with adb, part of Google\'s Android SDK Platform-Tools, downloaded\n'
+              f'from Google under the Android SDK License Agreement:\n  {url}')
+        if not interactive or ask('Do you accept it? (yes/no)').lower() not in ('y', 'yes'):
+            sys.exit('Not accepted: nothing was downloaded.')
+
+    if built or opts.get('--push-only'):
+        if not glob.glob(os.path.join(modules, '*.so')):
+            sys.exit(f'{modules} holds no modules: run the setup with --android (without --push-only) first')
+    else:
+        if not any(os.path.exists(os.path.join(OUT, 'fs', 'ux0', 'app', t, 'eboot.bin'))
+                   for t in [game['title_id']] + game.get('other_title_ids', [])):
+            sys.exit('The game isn\'t built on this computer yet: start it once and build it from your dump '
+                     '(or run the setup with --install <dump> --android)')
+        print(f'\nandroid 1/3 the modules for Android, from the game in {OUT} (several minutes)')
+        tc = android_toolchain(cache)
+        jobs = opts.get('--jobs') or str(max(1, min(os.cpu_count() or 4, 6)))
+        cmd = py + [os.path.join(TOOLS, 'install-game.py'), '--project', GAME, '--bin', OUT, '--exe', exe,
+                    '--work', work, '--out', OUT, '--jobs', jobs, '--android', tc, '--android-only']
+        if run_logged(cmd):
+            sys.exit(f'building the modules for Android failed (see above; its work files are in {work})')
+        remove(work)
+        remove(os.path.join(OUT, game['id'], 'elfdumps'))
+
+    print('\nandroid 2/3 adb')
+    adb = droid.fetch_adb(cache, True)
+    print(f'\nandroid 3/3 copying the game to the device (minutes over Wi-Fi)')
+    cmd = py + [os.path.join(TOOLS, 'android.py'), '--project', GAME, 'push', OUT, '--apk', apk, '--adb', adb]
+    for k in ('--serial', '--pair', '--code', '--connect'):
+        if opts.get(k):
+            cmd += [k, opts[k]]
+    code = run_logged(cmd)
+    # adb's server keeps running from the downloads: stopped, so they can go
+    subprocess.run([adb, 'kill-server'], capture_output=True)
+    time.sleep(1)
+    if not opts.get('--cache'):
+        remove(cache)
+    if code:
+        sys.exit('copying to the device failed (see above); the modules stay in '
+                 f'{modules}: --android --push-only tries again without building')
+    print(f'\nandroid done: start {game["name"]} on the device')
 
 
 if __name__ == '__main__':

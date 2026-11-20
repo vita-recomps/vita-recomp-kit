@@ -12,7 +12,7 @@ usage:
                             --install <zip|vpk|folder|pkg> [--license <work.bin|rif> | --zrif Z]
                             [--install ...] [--name NAME | --out DIR] [--dump-seconds N] [--no-recompile]
                             [--no-jit] [--bin DIR] [--exe FILE] [--work DIR] [--toolchain DIR] [--jobs N]
-                            [--android DIR]
+                            [--android DIR [--android-only]]
 
   --install   repeat for each part, in order (the game, then its patch, then add-ons); a pkg's
               --license or --zrif follows it. A patch's or add-on's licence can be omitted when
@@ -32,6 +32,9 @@ usage:
   --android       also build the modules for the game's Android APK (arm64), with the zig toolchain.py
                   unpacked in DIR (Windows: toolchain-android-windows.json; Linux and macOS: their own
                   lock file's zig), into <out>/android/; android.py push puts them and fs/ on a device
+  --android-only  only the modules for Android: no PC modules, the folder itself left as it is. Without
+                  --install (and --firmware), the game already installed in <out>/fs is used: a built
+                  folder needs no dump again
 """
 import argparse
 import glob
@@ -65,7 +68,7 @@ def main():
             i += 1
     ap = argparse.ArgumentParser(usage=__doc__)
     ap.add_argument('--project', default=os.getcwd())
-    ap.add_argument('--firmware', nargs='+', required=True)
+    ap.add_argument('--firmware', nargs='+', default=[])
     ap.add_argument('--name', default='')
     ap.add_argument('--dump-seconds', type=int, default=0)
     ap.add_argument('--no-recompile', action='store_true')
@@ -77,11 +80,17 @@ def main():
     ap.add_argument('--out', default='')
     ap.add_argument('--jobs', type=int, default=4)
     ap.add_argument('--android', default='')
+    ap.add_argument('--android-only', action='store_true')
     a = ap.parse_args(rest)
     if a.android and not toolchain.zig_executable(a.android):
         sys.exit(f'--android {a.android}: no zig there (python -I toolchain.py fetch <lock file> {a.android})')
-    if '--install' not in content:
+    if a.android_only and not a.android:
+        sys.exit('--android-only needs --android <toolchain dir>')
+    reuse = '--install' not in content and a.android_only
+    if '--install' not in content and not reuse:
         sys.exit('nothing to install: --install <game dump>')
+    if not reuse and not a.firmware:
+        sys.exit('--firmware: the PS Vita firmware update(s) to install (PSVUPDAT.PUP, PSP2UPDAT.PUP)')
     # the front end takes each part as --install-content (its own --install reopens a release's importer)
     content = ['--install-content' if x == '--install' else x for x in content]
 
@@ -114,13 +123,18 @@ def main():
                 sys.stdout.write(line)
         return proc.wait()
 
-    # 1. firmware and game
-    args = []
-    for pup in a.firmware:
-        args += ['--install-firmware', os.path.abspath(pup)]
-    print('installing', ' '.join(os.path.basename(x) for x in a.firmware + content[1::2] if os.path.exists(x)))
-    if front_end(args + content):
-        sys.exit(f'installation failed: see {os.path.join(bin_dir, p.id, "vita3k.log")}')
+    # 1. firmware and game (--android-only without --install: the game installed already)
+    if reuse:
+        if not p.installed_title(fs):
+            sys.exit(f'no {" or ".join(p.title_ids)} in {fs}: build the game first (or pass --install)')
+        print(f'the game installed in {fs}')
+    else:
+        args = []
+        for pup in a.firmware:
+            args += ['--install-firmware', os.path.abspath(pup)]
+        print('installing', ' '.join(os.path.basename(x) for x in a.firmware + content[1::2] if os.path.exists(x)))
+        if front_end(args + content):
+            sys.exit(f'installation failed: see {os.path.join(bin_dir, p.id, "vita3k.log")}')
 
     # 2. a supported build
     title = p.installed_title(fs)
@@ -167,8 +181,10 @@ def main():
                     print(' ', line)
             if r.returncode:
                 sys.exit(f'recompiling {m} failed:\n{r.stderr}')
-        print('compiling (this takes a while)')
-        if a.toolchain:
+        print('compiling (this takes a while)' if not a.android_only else 'compiling for Android (this takes a while)')
+        if a.android_only:
+            pass
+        elif a.toolchain:
             toolchain.build_modules(gen, list(p.modules.values()), recompiled_dir, a.toolchain, a.jobs)
         else:
             env = msvc.environment()
@@ -180,11 +196,12 @@ def main():
             if subprocess.run(['cmake', '--build', recompiled_dir], env=env).returncode:
                 sys.exit('compiling the recompiled modules failed')
         if a.android:
-            print('compiling for Android (this takes a while too)')
+            if not a.android_only:
+                print('compiling for Android (this takes a while too)')
             toolchain.build_modules(gen, list(p.modules.values()), os.path.join(work, 'build-android'), a.android,
                                     a.jobs, android=True)
 
-    # 5. the folder; the Vita file system is its own fs/, the ini's default
+    # 5. the folder; the Vita file system is its own fs/, the ini's default (--android-only: as it is)
     dist = [sys.executable, '-I', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'make-dist.py'),
             '--project', p.root, '--out', out]
     dist += ['--bin', bin_dir] if a.bin else []
@@ -193,7 +210,7 @@ def main():
     dist += ['--redist', os.path.join(a.toolchain, 'redist')] if a.toolchain and os.path.isdir(os.path.join(a.toolchain, 'redist')) else []
     dist += ['--recompiled-dir', recompiled_dir] if not a.no_recompile and p.modules else ['--no-recompiled']
     dist += ['--no-jit'] if a.no_jit else []
-    code = subprocess.run(dist).returncode
+    code = 0 if a.android_only else subprocess.run(dist).returncode
     if code == 0 and a.android and not a.no_recompile and p.modules:
         # the Android modules beside the folder's fs/, for android.py push
         android_dir = os.path.join(out, 'android')

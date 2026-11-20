@@ -14,6 +14,7 @@ folder:
                           distribution and tcltk.msi; Linux and macOS, python-build-standalone
   setup/kit/recomp, setup/kit/tools   this kit's recompiler and tools (tools/setup.py: the importer)
   setup/kit/game/         game.json and the README's source
+  setup/android/<id>.apk  with --apk: the game's APK, which setup.py --android puts on a device
 
 Nothing derived from a game or the firmware goes in: release checks refuse such files.
 
@@ -25,9 +26,11 @@ usage:
   python -I make-setup.py resolve <lock.json>           pin the embeddable Python and the wheels
   python -I make-setup.py resolve-linux <lock.json> <tag>   pin python-build-standalone release <tag>
   python -I make-setup.py resolve-macos <lock.json> <tag>   the same for Apple Silicon macOS
-  python -I make-setup.py build <lock.json> --project DIR --bin DIR --out DIR [--zip [--archive PATH]]
+  python -I make-setup.py build <lock.json> --project DIR --bin DIR --out DIR [--apk FILE]
+                           [--zip [--archive PATH]]
 
   --out       the game's folder to make (its name is the archive's top folder)
+  --apk       the game's APK for Android (the release workflow's android job), as setup/android/<id>.apk
   --zip       also an archive of it (Windows .zip, Linux and macOS .tar.gz, which keep the
               executables' modes and Python's symbolic links), at --archive (without extension;
               default: --out)
@@ -418,6 +421,10 @@ def front_end(p, bin_dir, out, files, exe=None):
 
 def finish(a, out, fmt):
     """The release checks, its size, and with --zip its archive (fmt: 'zip' or 'gztar')."""
+    if a.apk:
+        android = os.path.join(out, 'setup', 'android')
+        os.makedirs(android, exist_ok=True)
+        shutil.copy2(a.apk, os.path.join(android, Project(a.project).id + '.apk'))
     release_check(out)
     size = sum(os.path.getsize(os.path.join(d, f)) for d, _, fs in os.walk(out) for f in fs)
     print(f'{out}: {size / 2**20:,.0f} MB')
@@ -526,6 +533,7 @@ def main():
     ap.add_argument('--project', default=os.getcwd())
     ap.add_argument('--bin', required=True)
     ap.add_argument('--out', required=True)
+    ap.add_argument('--apk', default='')
     ap.add_argument('--zip', action='store_true')
     ap.add_argument('--archive', default='')
     build(ap.parse_args())

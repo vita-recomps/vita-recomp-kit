@@ -1,7 +1,10 @@
-"""The setup's window (Tk): asks for the dump's parts, the playable folder and (Windows) Microsoft's
-licence, then runs setup.py with them in a hidden console and shows its progress. setup.py stays the
-one place that does the work, so the window and the command line do the same thing.
+"""The setup's windows (Tk). Window asks for the dump's parts, the playable folder and (Windows)
+Microsoft's licence, then runs setup.py with them in a hidden console and shows its progress.
+AndroidWindow (setup.py --android) asks how the Android device is connected and runs setup.py
+--android --console the same way. setup.py stays the one place that does the work, so the windows and
+the command line do the same thing.
 """
+import json
 import os
 import queue
 import re
@@ -27,6 +30,15 @@ STAGES = [
     (r'^recompiling ', 'Translating the game\'s code into C++'),
     (r'^compiling', 'Compiling the translated code'),
     (r'^3/3 done', 'Done'),
+]
+ANDROID_STAGES = [
+    (r'^android 1/3 ', 'Building the game\'s modules for Android (several minutes)'),
+    (r'^android 2/3 ', 'Downloading adb (from Google)'),
+    (r'^android 3/3 ', 'Copying the game to the device'),
+    (r'^installing ', 'Installing the game on the device'),
+    (r'^copying .* to the device', 'Copying the game\'s files to the device (minutes over Wi-Fi)'),
+    (r'^copying \d+ modules', 'Copying the modules'),
+    (r'^android done', 'Done'),
 ]
 
 
@@ -137,6 +149,7 @@ class Window:
         self.steam = tk.BooleanVar(value=True)  # Linux: setup.py --steam
         self.stage = tk.StringVar(value='')
         self.extra_args = []  # more setup.py arguments (tests: --cache)
+        self.stages = STAGES
 
         f = ttk.Frame(self.root, padding=12)
         f.grid(sticky='nsew')
@@ -196,7 +209,12 @@ class Window:
         self.open.grid(row=0, column=2)
 
         ttk.Label(f, textvariable=self.stage, font=('Segoe UI', 10, 'bold'), wraplength=720, justify='left').grid(sticky='w', pady=(12, 2))
-        self.bar = ttk.Progressbar(f, mode='determinate', maximum=len(STAGES) - 1)
+        self.add_log(f)
+        self.root.protocol('WM_DELETE_WINDOW', self.close)
+
+    def add_log(self, f):
+        """The progress bar and the setup's output, at the bottom of frame f."""
+        self.bar = ttk.Progressbar(f, mode='determinate', maximum=len(self.stages) - 1)
         self.bar.grid(sticky='ew')
         log = ttk.Frame(f)
         log.grid(sticky='nsew', pady=(6, 0))
@@ -208,7 +226,6 @@ class Window:
         sb = ttk.Scrollbar(log, command=self.log.yview)
         sb.grid(row=0, column=1, sticky='ns')
         self.log['yscrollcommand'] = sb.set
-        self.root.protocol('WM_DELETE_WINDOW', self.close)
 
     def watch_dump(self, *_):
         """The game's path changed (picked or typed): look into the dump once typing pauses."""
@@ -320,7 +337,7 @@ class Window:
                     self.finished(self.proc.wait())
                     return
                 self.write(line)
-                for i, (pattern, text) in enumerate(STAGES):
+                for i, (pattern, text) in enumerate(self.stages):
                     if re.match(pattern, line) and i >= self.bar['value']:
                         self.bar['value'] = i
                         self.stage.set(text)
@@ -373,3 +390,159 @@ class Window:
         """The window until it closes; setup.py's exit code (0 Play, 2 built and closed, 1 not built)."""
         self.root.mainloop()
         return self.result
+
+
+class AndroidWindow(Window):
+    """setup.py --android: the game, built on this computer, onto an Android device (the release's APK,
+    the game's files, its modules built for Android). Asks how the device is connected and for Google's
+    licence (adb), then runs setup.py --android --console with that."""
+
+    def __init__(self, game, setup_py, out, exe):
+        import android as droid
+        self.game, self.exe, self.setup_py, self.out = game, exe, setup_py, out
+        self.root = tk.Tk()
+        self.root.title(f'{game["name"]}: Android device')
+        self.root.minsize(760, 0)
+        self.lines = queue.Queue()
+        self.proc = None
+        self.built = False
+        self.result = 1  # 0: copied to the device
+        self.stages = ANDROID_STAGES
+        self.stage = tk.StringVar(value='')
+        self.extra_args = []
+        self.accepted = tk.BooleanVar(value=False)
+        self.way = tk.StringVar(value='wifi')
+        self.pair = tk.StringVar()
+        self.code = tk.StringVar()
+        self.connect = tk.StringVar()
+        modules = os.path.join(out, 'android')
+        self.have_modules = os.path.isdir(modules) and any(n.endswith('.so') for n in os.listdir(modules))
+        self.rebuild = tk.BooleanVar(value=not self.have_modules)
+        with open(droid.LOCK, encoding='utf-8') as fh:
+            licence_url = json.load(fh)['license_url']
+
+        f = ttk.Frame(self.root, padding=12)
+        f.grid(sticky='nsew')
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(0, weight=1)
+        f.columnconfigure(0, weight=1)
+        ttk.Label(f, text=f'{game["name"]} on an Android device', font=('Segoe UI', 14, 'bold')).grid(sticky='w')
+        ttk.Label(f, wraplength=720, justify='left', text=(
+            'This puts the game you built on this computer onto an Android device with a 64-bit ARM chip and '
+            'Vulkan (made for Snapdragon handhelds such as the AYN Thor): the game\'s app, its files and its '
+            'code built for Android, which takes a few minutes. The files are copied over the cable or Wi-Fi '
+            '(several GB: minutes over Wi-Fi). Saves already on the device stay.')).grid(sticky='w', pady=(4, 10))
+
+        dev = ttk.LabelFrame(f, text='The device: first turn on Developer options (Settings > About: tap the '
+                             'build number seven times)', padding=8)
+        dev.grid(sticky='ew')
+        dev.columnconfigure(1, weight=1)
+        ttk.Radiobutton(dev, variable=self.way, value='wifi', text='Over Wi-Fi (the same network as this '
+                        'computer)', command=self.show_way).grid(row=0, column=0, columnspan=3, sticky='w')
+        self.wifi = ttk.Frame(dev)
+        self.wifi.grid(row=1, column=0, columnspan=3, sticky='ew', padx=(22, 0))
+        self.wifi.columnconfigure(4, weight=1)  # the fields stay beside their labels
+        ttk.Label(self.wifi, foreground='gray', wraplength=660, justify='left', text=(
+            'On the device: Developer options > Wireless debugging: turn it on, then "Pair device with pairing '
+            'code". Type the IP address and port and the six-digit code it shows.')).grid(
+            row=0, column=0, columnspan=4, sticky='w')
+        ttk.Label(self.wifi, text='IP address and port').grid(row=1, column=0, sticky='w', pady=(4, 0))
+        ttk.Entry(self.wifi, textvariable=self.pair, width=24).grid(row=1, column=1, sticky='w', pady=(4, 0))
+        ttk.Label(self.wifi, text='Pairing code').grid(row=1, column=2, sticky='w', padx=(12, 4), pady=(4, 0))
+        ttk.Entry(self.wifi, textvariable=self.code, width=10).grid(row=1, column=3, sticky='w', pady=(4, 0))
+        ttk.Label(self.wifi, foreground='gray', wraplength=660, justify='left', text=(
+            'Paired before? Leave these empty. If the device isn\'t found, type the address and port shown on '
+            'the Wireless debugging screen itself here:')).grid(row=2, column=0, columnspan=4, sticky='w', pady=(4, 0))
+        ttk.Entry(self.wifi, textvariable=self.connect, width=24).grid(row=3, column=1, sticky='w')
+        ttk.Radiobutton(dev, variable=self.way, value='usb', text='With a USB cable (Developer options > USB '
+                        'debugging on; allow this computer when the device asks)',
+                        command=self.show_way).grid(row=2, column=0, columnspan=3, sticky='w', pady=(6, 0))
+
+        lic = ttk.Frame(f)
+        lic.grid(sticky='w', pady=(10, 0))
+        ttk.Checkbutton(lic, variable=self.accepted, text='I accept Google\'s Android SDK licence for adb, the '
+                        'tool that copies the game').grid(row=0, column=0)
+        link = ttk.Label(lic, text='(read it)', foreground='blue', cursor='hand2')
+        link.grid(row=0, column=1, padx=4)
+        link.bind('<Button-1>', lambda e: webbrowser.open(licence_url))
+        if self.have_modules:
+            ttk.Checkbutton(f, variable=self.rebuild, text='Build the modules for Android again (needed after '
+                            'building the game again on this computer)').grid(sticky='w', pady=(4, 0))
+
+        buttons = ttk.Frame(f)
+        buttons.grid(sticky='ew', pady=(12, 0))
+        self.install = ttk.Button(buttons, text='Copy to the device', command=self.start)
+        self.install.grid(row=0, column=0)
+        ttk.Button(buttons, text='Close', command=self.close).grid(row=0, column=1, padx=6)
+        self.play = self.open = None
+
+        ttk.Label(f, textvariable=self.stage, font=('Segoe UI', 10, 'bold'), wraplength=720,
+                  justify='left').grid(sticky='w', pady=(12, 2))
+        self.add_log(f)
+        self.root.protocol('WM_DELETE_WINDOW', self.close)
+        built = any(os.path.exists(os.path.join(out, 'fs', 'ux0', 'app', i, 'eboot.bin'))
+                    for i in [game['title_id']] + game.get('other_title_ids', []))
+        if not built:
+            self.install['state'] = 'disabled'
+            self.stage.set('The game isn\'t built on this computer yet: start it once and build it from your '
+                           'dump first.')
+
+    def show_way(self):
+        if self.way.get() == 'wifi':
+            self.wifi.grid()
+        else:
+            self.wifi.grid_remove()
+
+    def start(self):
+        if not self.accepted.get():
+            messagebox.showerror('Android device', 'adb needs Google\'s licence accepted.')
+            return
+        args = ['--android', '--console', '--accept-android-sdk-license', '--exe', self.exe, *self.extra_args]
+        if not self.rebuild.get():
+            args.append('--push-only')
+        pair, code, connect = (v.get().strip() for v in (self.pair, self.code, self.connect))
+        if self.way.get() == 'wifi':
+            if pair and not code:
+                messagebox.showerror('Android device', 'Type the pairing code too (six digits).')
+                return
+            if pair:
+                args += ['--pair', pair, '--code', code]
+            if connect:
+                args += ['--connect', connect]
+        python = os.path.join(os.path.dirname(sys.executable), 'python.exe') if WINDOWS else sys.executable
+        cmd = [python, '-I', '-u', self.setup_py, *args]
+        self.install['state'] = 'disabled'
+        self.bar['value'] = 0
+        self.stage.set(self.stages[0][1] if self.rebuild.get() else self.stages[1][1])
+        self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                     encoding='utf-8', errors='replace',
+                                     creationflags=NO_WINDOW, start_new_session=not WINDOWS)
+        threading.Thread(target=self.read, daemon=True).start()
+        self.root.after(100, self.poll)
+
+    def finished(self, code):
+        self.proc = None
+        self.install['state'] = 'normal'
+        if code == 0:
+            self.result = 0
+            self.built = True
+            self.have_modules = True
+            self.rebuild.set(False)
+            self.bar['value'] = self.bar['maximum']
+            self.stage.set(f'Done: start {self.game["name"]} on the device. (On a Snapdragon device it offers '
+                           'a better GPU driver the first time.)')
+        else:
+            self.stage.set('Copying to the device failed: see the messages above.')
+
+    def close(self):
+        if self.proc and not messagebox.askyesno('Android device', 'Copying is still running. Stop it?'):
+            return
+        if self.proc and WINDOWS:
+            subprocess.run(['taskkill', '/T', '/F', '/PID', str(self.proc.pid)], capture_output=True,
+                           creationflags=NO_WINDOW)
+        elif self.proc:
+            try:
+                os.killpg(self.proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        self.root.destroy()

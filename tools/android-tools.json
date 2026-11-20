@@ -1,0 +1,26 @@
+{
+ "schema": "vita-recomp-kit.android-tools.v1",
+ "_comment": "Google's platform-tools (adb) for android.py, pinned from https://dl.google.com/android/repository/repository2-3.xml (SHA-1 there checked; SHA-256 taken from the checked files). Under the Android SDK License Agreement, which the player accepts; never redistributed by this project.",
+ "platform_tools": "37.0.3",
+ "license_url": "https://developer.android.com/studio/terms",
+ "payloads": {
+  "windows": {
+   "file": "platform-tools_r37.0.3-win.zip",
+   "url": "https://dl.google.com/android/repository/platform-tools_r37.0.3-win.zip",
+   "sha256": "89d108360a3bf2924d3bea837239edaccc22fd6ff5befd3787c4348a9fe4f09d",
+   "size": 8188601
+  },
+  "linux": {
+   "file": "platform-tools_r37.0.3-linux.zip",
+   "url": "https://dl.google.com/android/repository/platform-tools_r37.0.3-linux.zip",
+   "sha256": "214548146cadb2ca3508143d8a1d4be4c59de5bb837253e3ede89ed74cf450d1",
+   "size": 9571024
+  },
+  "macos": {
+   "file": "platform-tools_r37.0.3-darwin.zip",
+   "url": "https://dl.google.com/android/repository/platform-tools_r37.0.3-darwin.zip",
+   "sha256": "df21339b9371fef9b19264404338dc686f59a88a1dce634b963da344909001d6",
+   "size": 16597626
+  }
+ }
+}
