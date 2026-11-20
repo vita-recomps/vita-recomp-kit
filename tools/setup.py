@@ -29,7 +29,8 @@ its own --dump parts on as --install:
   --exe       the game's executable (default: the one in the game's folder; macOS: inside its app)
 
 Exit codes: 0 built (the game then starts), 2 built but the window was closed without Play, 1 failed
-or cancelled.
+or cancelled. The output of a build (from the window too) is also in <game folder>/<id>/setup.log,
+next to the game's own log, so a launcher's crash report carries it.
 """
 import json
 import os
@@ -38,6 +39,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.parse
 
 TOOLS = os.path.dirname(os.path.abspath(__file__))
@@ -306,6 +308,52 @@ def remove(path):
         os.remove(path)
 
 
+class Tee:
+    """sys.stdout or sys.stderr, also written to the setup's log file."""
+
+    def __init__(self, stream, log):
+        self.stream, self.log = stream, log
+
+    def write(self, text):
+        self.log.write(text)
+        self.log.flush()
+        try:
+            return self.stream.write(text)
+        except UnicodeEncodeError:  # a console code page without the character
+            return self.stream.write(text.encode(self.stream.encoding or 'ascii', 'replace').decode(
+                self.stream.encoding or 'ascii'))
+
+    def flush(self):
+        self.stream.flush()
+
+    def __getattr__(self, name):
+        return getattr(self.stream, name)
+
+
+def start_log(path):
+    """The setup's output, also in path (the game's log folder, which a launcher sends with a report).
+    Returns the log file, or None if it can't be written."""
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        log = open(path, 'w', encoding='utf-8', newline='')
+    except OSError:
+        return None
+    sys.stdout, sys.stderr = Tee(sys.stdout, log), Tee(sys.stderr, log)
+    return log
+
+
+def run_logged(cmd, on_line=None):
+    """Run a tool with its output passed on (and so into the log), each line also to on_line."""
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    for raw in proc.stdout:
+        line = raw.decode('utf-8', 'replace').replace('\r\n', '\n')
+        sys.stdout.write(line)
+        sys.stdout.flush()
+        if on_line:
+            on_line(line)
+    return proc.wait()
+
+
 def main():
     argv = sys.argv[1:]
     with open(os.path.join(GAME, 'game.json'), encoding='utf-8') as f:
@@ -345,6 +393,11 @@ def main():
         import setupgui
         sys.exit(setupgui.Window(game, os.path.abspath(__file__), OUT, exe, lock.get('microsoft_license')).run())
     interactive = not parts
+    # the window runs this same setup in a hidden console, so the log has its output too
+    log_path = os.path.join(OUT, game['id'], 'setup.log')
+    if start_log(log_path):
+        print(f'{time.strftime("%Y-%m-%d %H:%M:%S")} {game["name"]} setup on {platform} '
+              f'({sys.platform}, Python {sys.version.split()[0]}); log: {log_path}')
 
     def step(fraction, text):
         """--progress: a launcher's progress line, the fraction of the whole setup done."""
@@ -372,7 +425,7 @@ def main():
     print(f'\n1/3 firmware (from Sony) and compiler ({lock["download_bytes"] / 2**20:,.0f} MB), into {cache}')
     py = [sys.executable, '-I', '-u']
     step(0.02, 'Downloading the PS Vita firmware from Sony')
-    if subprocess.run(py + [os.path.join(TOOLS, 'fetch-firmware.py'), os.path.join(cache, 'firmware')]).returncode:
+    if run_logged(py + [os.path.join(TOOLS, 'fetch-firmware.py'), os.path.join(cache, 'firmware')]):
         sys.exit('downloading the firmware failed')
     tc_dir = os.path.join(cache, 'toolchain' if WINDOWS else f'toolchain-{platform}')
     pinned = [k for k in ('msvc', 'llvm_mingw', 'zig') if k in lock]  # the versions the lock file pins
@@ -389,28 +442,22 @@ def main():
     install = py + [os.path.join(TOOLS, 'install-game.py'), '--project', GAME, '--bin', out,
                     '--exe', exe, '--work', work, '--toolchain', tc_dir, '--out', out, '--jobs', jobs,
                     '--firmware', *firmware] + parts
-    if opts.get('--progress'):
-        # install-game.py's output passed on as it is, with a progress line at each of its steps
-        steps = [('installing', 0.30, 'Installing the game'),
-                 ('running the game', 0.40, 'Running the game once to read its code'),
-                 ('recompiling', 0.50, 'Recompiling the game\'s code'),
-                 ('compiling', 0.60, 'Compiling the game\'s code (this takes a while)')]
-        proc = subprocess.Popen(install, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        for raw in proc.stdout:
-            sys.stdout.buffer.write(raw)
-            sys.stdout.buffer.flush()
-            line = raw.decode('utf-8', 'replace')
-            for i, (prefix, fraction, text) in enumerate(steps):
-                if line.startswith(prefix):
-                    step(fraction, text)
-                    steps = steps[i + 1:]
-                    break
-        r = subprocess.CompletedProcess(install, proc.wait())
-    else:
-        r = subprocess.run(install)
-    if r.returncode:
+    # install-game.py's output passed on (and into the log), with --progress a progress line at each of its steps
+    steps = [('installing', 0.30, 'Installing the game'),
+             ('running the game', 0.40, 'Running the game once to read its code'),
+             ('recompiling', 0.50, 'Recompiling the game\'s code'),
+             ('compiling', 0.60, 'Compiling the game\'s code (this takes a while)')]
+
+    def install_step(line):
+        for i, (prefix, fraction, text) in enumerate(steps):
+            if line.startswith(prefix):
+                step(fraction, text)
+                del steps[:i + 1]
+                break
+
+    if run_logged(install, install_step):
         # the work files stay, for a look at what went wrong; the next build replaces them
-        sys.exit(f'the setup failed (see above; its work files are in {work})')
+        sys.exit(f'the setup failed (see above, also in {log_path}; its work files are in {work})')
 
     # nothing of the build is left outside what the game needs: the work files (generated code), the
     # modules as the game loaded them, and the downloads (unless --cache keeps them)
