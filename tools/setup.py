@@ -429,6 +429,14 @@ def main():
     if interactive:
         parts = ask_parts(game)
     out = OUT
+    # a dump without the game itself (only its update) fails at the install: said before the downloads.
+    # An update alone is fine when the game is installed in the folder already.
+    ids = [game['title_id']] + game.get('other_title_ids', [])
+    if parts and not any(os.path.exists(os.path.join(out, 'fs', 'ux0', 'app', t, 'eboot.bin')) for t in ids):
+        missing = dumpinfo.missing_game([parts[k + 1] for k in range(0, len(parts), 2) if parts[k] == '--install'],
+                                        ids)
+        if missing:
+            sys.exit(f'Not installed: {missing}')
     # the downloads: inside setup/ and gone after the build, unless --cache keeps them elsewhere
     cache = os.path.abspath(opts['--cache']) if opts.get('--cache') else os.path.join(SETUP, 'downloads')
     work = os.path.join(SETUP, 'work')

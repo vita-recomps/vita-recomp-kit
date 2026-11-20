@@ -248,11 +248,18 @@ class Window:
         game.show_licence()
         need = dumpinfo.supported_version(self.game)
         have = info['version'] if info else None
-        update.set_included(f'in the game\'s dump ({dumpinfo.label(have)})' if have and need and have >= need else '')
+        update.set_included(f'in the game\'s dump ({dumpinfo.label(have)})'
+                            if info and info['game'] and have and need and have >= need else '')
         if not info:
             self.dump_note['text'] = self.hint
         elif not info['game'] and not info['update']:
             self.dump_note['text'] = f'This dump holds no {" or ".join(ids)}.'
+        elif not info['game']:
+            tid = info['update']['title_id']
+            self.dump_note['text'] = (
+                f'This holds only the update {dumpinfo.label(dumpinfo.version(info["update"]["version"]))}, '
+                f'not the game. Choose the folder that holds both app/{tid} and patch/{tid} (or the dump\'s '
+                f'zip), or the game here and the update below.')
         else:
             held = []
             if info['game']:
@@ -299,7 +306,15 @@ class Window:
             messagebox.showerror('Setup', 'The compiler needs Microsoft\'s licence accepted.')
             return
         ids = [self.game['title_id']] + self.game.get('other_title_ids', [])
-        if any(os.path.exists(os.path.join(self.out, 'fs', 'ux0', 'app', i, 'eboot.bin')) for i in ids) and \
+        built = any(os.path.exists(os.path.join(self.out, 'fs', 'ux0', 'app', i, 'eboot.bin')) for i in ids)
+        # only the update, not the game: the install would fail after the downloads (an update alone
+        # is fine over a built game)
+        missing = None if built else dumpinfo.missing_game(
+            [p.path.get().strip().strip('"') for p in parts if p.path.get().strip()], ids)
+        if missing:
+            messagebox.showerror('Setup', f'The game can\'t be installed from this: {missing}')
+            return
+        if built and \
                 not messagebox.askyesno('Setup', 'The game is built already. Build it again from this dump? '
                                         '(Saves and settings are kept.)'):
             return

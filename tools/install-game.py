@@ -46,6 +46,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import dumpinfo  # noqa: E402
 import msvc  # noqa: E402
 import toolchain  # noqa: E402
 from gameproject import Project  # noqa: E402
@@ -129,6 +130,13 @@ def main():
             sys.exit(f'no {" or ".join(p.title_ids)} in {fs}: build the game first (or pass --install)')
         print(f'the game installed in {fs}')
     else:
+        # a dump without the game itself (only its update): said plainly, not as Vita3K's
+        # "Install app before patch"; an update alone is fine over an installed game
+        if not p.installed_title(fs):
+            missing = dumpinfo.missing_game([content[k + 1] for k in range(0, len(content), 2)
+                                             if content[k] == '--install-content'], p.title_ids)
+            if missing:
+                sys.exit(f'not installed: {missing}')
         args = []
         for pup in a.firmware:
             args += ['--install-firmware', os.path.abspath(pup)]

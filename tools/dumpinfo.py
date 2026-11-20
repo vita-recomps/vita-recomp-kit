@@ -96,6 +96,31 @@ def summary(parts, title_ids):
             'add-ons': sum(p['kind'] == 'add-on' for p in mine)}
 
 
+def missing_game(paths, title_ids):
+    """For a setup's parts (paths, in the order given): why the game can't be installed from them when
+    none holds the game itself (an update-only folder, say), else None. A pkg, or anything else
+    inspect() can't read, may be the game: no message then."""
+    updates = []
+    for path in paths:
+        found = inspect(path)
+        if found is None:
+            return None
+        info = summary(found, title_ids)
+        if info['game']:
+            return None
+        if info['update']:
+            updates.append((path, info['update']))
+    ids = ' or '.join(title_ids)
+    if not updates:
+        return f'no game {ids} found in {", ".join(os.path.normpath(x) for x in paths)}'
+    path, update = os.path.normpath(updates[0][0]), updates[0][1]
+    tid = update['title_id']
+    return (f'{path} holds only the update {label(version(update["version"]))} of {tid}, not the game. '
+            f'A NoNpDrm dump keeps the game in app/{tid} and the update in patch/{tid}: give the folder '
+            f'that holds both (or the dump\'s zip), or the game\'s folder then the update\'s. The game and '
+            f'its update unpacked into one {tid} folder don\'t work: the update\'s files replace the game\'s.')
+
+
 def supported_version(game):
     """The newest version game.json's eboot_sha256 labels name ('1.30 (US)', '1.02'), as (1, 30)."""
     versions = [version(label) for label in game.get('eboot_sha256', {}).values()]
@@ -115,3 +140,5 @@ if __name__ == '__main__':
         sys.exit(f'{sys.argv[1]}: not readable as a zip, vpk or folder (a pkg is encrypted)')
     for p in found:
         print(f"{p['kind']:7} {p['title_id']} {p['version']}{'  licence inside' if p['licence'] else ''}")
+    if found and not any(p['kind'] == 'game' for p in found):
+        print('no game: only', ', '.join(sorted({p['kind'] for p in found})))
