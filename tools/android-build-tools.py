@@ -13,11 +13,13 @@ kit's recompiler and build scripts. Laid out for the APK's Gradle project (its b
       python/lib/python3.14/   the standard library (without its tests, IDLE, Tk and ensurepip)
       site/capstone, site/yaml the Python sides of capstone and PyYAML
       zig/lib/                 zig's lib/, without what an aarch64-linux-musl build never reads
-      kit/recomp, kit/tools    this kit's recompiler and scripts
+      kit/recomp, kit/tools    this kit's recompiler and scripts (android-setup.py runs the build)
+      game.json                the game the APK is for (--project), which android-setup.py reads
   <out>/assets/buildtools.json  the versions; the app unpacks again when it changes
 
 usage:
-  python -I android-build-tools.py <lock: android-build-tools.json> <out> --ndk <NDK folder> [--cache DIR]
+  python -I android-build-tools.py <lock: android-build-tools.json> <out> --ndk <NDK folder> --project <game>
+                                   [--cache DIR]
 
 The NDK (r29) builds capstone and the launcher; the payloads are checked against the lock's SHA-256.
 Nothing here comes from a game: the APK may carry it.
@@ -100,12 +102,16 @@ def main():
     ap.add_argument('lock')
     ap.add_argument('out')
     ap.add_argument('--ndk', required=True)
+    ap.add_argument('--project', required=True, help="the game's folder (game.json)")
     ap.add_argument('--cache', default='')
     a = ap.parse_args()
     lock = json.load(open(a.lock, encoding='utf-8'))
     if lock.get('schema') != 'vita-recomp-kit.android-build-tools.v1':
         sys.exit(f'{a.lock}: not an android-build-tools lock file')
     clang = ndk_clang(os.path.abspath(a.ndk))
+    game_json = os.path.join(os.path.abspath(a.project), 'game.json')
+    if not os.path.isfile(game_json):
+        sys.exit(f'no game.json in {a.project}')
     out = os.path.abspath(a.out)
     libs = os.path.join(out, 'jniLibs', ABI)
     assets = os.path.join(out, 'assets')
@@ -155,6 +161,9 @@ def main():
         print('packing the assets')
         count = 0
         with zipfile.ZipFile(os.path.join(assets, 'buildtools.zip'), 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as z:
+            # first: the app reads the game's name from it without unpacking the rest
+            z.write(game_json, 'game.json')
+            count += 1
             count += zip_tree(z, os.path.join(py, 'lib', f'python{version}'), f'python/lib/python{version}',
                               lambda rel: rel.split('/')[0] in PYTHON_DROP or rel.startswith('config-'))
             count += zip_tree(z, os.path.join(work, 'capstone', 'capstone'), 'site/capstone')
