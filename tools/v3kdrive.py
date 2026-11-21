@@ -42,6 +42,8 @@ Steps (comma separated):
   memwrite:<addr>:<bytes>  write bytes (hex, memory order, e.g. 00007a44 for 1000.0f) to guest
                     memory at a hex address (front end)
   menu              open or close the front end's settings menu
+  mouse:<dx>:<dy>[:ms]  move the mouse by (dx, dy) counts, spread over ms, as if the front end
+                    had captured it (its mouse camera turns that into the right stick)
   mark:<label>      label the following FPS samples in the CSV
 """
 import csv, ctypes, os, re, subprocess, sys, time
@@ -303,6 +305,19 @@ def run(steps, fps_csv):
             pad.frame(step[6:])
         elif step == "menu":
             pad.command("menu")
+        elif step.startswith("mouse:"):
+            # relative mouse motion, spread over ms (10 ms apart) like a hand's
+            _, dx, dy, *ms = step.split(":")
+            n = max(1, int(ms[0]) // 10) if ms else 1
+            pad.connect()
+            if not pad.pipe:
+                print(f"{step}: needs the input pipe ({EXE})")
+                continue
+            for i in range(n):
+                pad.pipe.write(f"mouse {float(dx) / n:g} {float(dy) / n:g}\n")
+                pad.pipe.flush()
+                if i + 1 < n:
+                    time.sleep(0.01)
         elif step.startswith("memdump:"):
             _, address, size, path = step.split(":", 3)
             pad.memdump(int(address, 16), int(size, 16), path)
