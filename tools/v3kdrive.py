@@ -39,6 +39,8 @@ Steps (comma separated):
   tdown:<x>:<y>     put the finger down and keep it there; tup lifts it
   record:<n>:<dir>  save the next n rendered frames into dir (front end); returns at once
   memdump:<addr>:<size>:<path>  write guest memory (hex address and size) to path (front end)
+  memwrite:<addr>:<bytes>  write bytes (hex, memory order, e.g. 00007a44 for 1000.0f) to guest
+                    memory at a hex address (front end)
   menu              open or close the front end's settings menu
   mark:<label>      label the following FPS samples in the CSV
 """
@@ -304,6 +306,13 @@ def run(steps, fps_csv):
         elif step.startswith("memdump:"):
             _, address, size, path = step.split(":", 3)
             pad.memdump(int(address, 16), int(size, 16), path)
+        elif step.startswith("memwrite:"):
+            _, address, data = step.split(":")
+            try:
+                bytes.fromhex(data)  # checked here, sent as written
+            except ValueError:
+                sys.exit(f"{step}: the bytes must be hex digits, two per byte")
+            pad.command(f"memwrite {int(address, 16):x} {data}")
         elif step.startswith("record:"):
             _, n, path = step.split(":", 2)
             pad.record(int(n), path)
