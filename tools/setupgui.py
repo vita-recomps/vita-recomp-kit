@@ -165,10 +165,10 @@ class Window:
         self.addons = []
         self.addon_frame = dump
         self.addon_row = 4
-        self.add_button = ttk.Button(dump, text='Add an add-on (DLC)...', command=self.add_addon)
+        self.add_button = ttk.Button(dump, text='Add an add-on (DLC) or mod...', command=self.add_addon)
         self.add_button.grid(row=100, column=1, sticky='w', pady=(4, 0))
-        self.hint = ('The update and add-ons are optional. A licence can also be a zRIF typed in. Once the '
-                     'game is built, add-ons can be added alone.')
+        self.hint = ('The update, add-ons and mods (a rePatch folder or zip) are optional. A licence can also '
+                     'be a zRIF typed in. Once the game is built, add-ons and mods can be added alone.')
         self.dump_note = ttk.Label(dump, foreground='gray', text=self.hint, wraplength=560, justify='left')
         self.dump_note.grid(row=101, column=1, sticky='w')
         self.check_pending = None
@@ -264,6 +264,8 @@ class Window:
                 held.append(f'the update {dumpinfo.label(dumpinfo.version(info["update"]["version"]))}')
             if info['add-ons']:
                 held.append(f'{info["add-ons"]} add-on{"s" if info["add-ons"] > 1 else ""}')
+            if info['mods']:
+                held.append('a rePatch mod')
             text = 'Found in this dump: ' + ', '.join(held) + '.'
             if need and (not have or have < need):
                 text += f' The port needs version {dumpinfo.label(need)}: add the update.'
@@ -291,12 +293,13 @@ class Window:
         parts = [p for p in self.parts + self.addons]
         ids = [self.game['title_id']] + self.game.get('other_title_ids', [])
         built = any(os.path.exists(os.path.join(self.out, 'fs', 'ux0', 'app', i, 'eboot.bin')) for i in ids)
-        # the game built already: add-ons alone are installed (setup.py builds nothing again)
+        # the game built already: add-ons and mods alone are installed (setup.py builds nothing again)
         addons_only = built and not any(p.path.get().strip() for p in self.parts) and \
             any(p.path.get().strip() for p in self.addons)
         if not parts[0].path.get().strip() and not addons_only:
             messagebox.showerror('Setup', 'Choose the game first: its pkg, folder, zip or vpk.'
-                                 + (' (Or only add-ons, to add them to the game built here.)' if built else ''))
+                                 + (' (Or only add-ons and mods, to add them to the game built here.)' if built
+                                    else ''))
             return
         for p in parts:
             path = p.path.get().strip().strip('"')
@@ -315,7 +318,7 @@ class Window:
             return
         if built and not addons_only and \
                 not messagebox.askyesno('Setup', 'The game is built already. Build it again from this dump? '
-                                        '(Saves and settings are kept. To add only an add-on, leave the '
+                                        '(Saves and settings are kept. To add only an add-on or mod, leave the '
                                         'game\'s rows empty.)'):
             return
         args = [a for p in parts for a in p.args()]

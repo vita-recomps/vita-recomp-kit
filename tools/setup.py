@@ -16,10 +16,12 @@ its own --dump parts on as --install:
   python -I setup/kit/tools/setup.py --android [--console] [--push-only] [--accept-android-sdk-license]
             [--serial S | --pair HOST:PORT --code CODE | --connect HOST:PORT] [--apk FILE] [--cache DIR]
 
-  --install   repeat for each part, in order: the game, then its update, then add-ons. A pkg without
-              --license or --zrif takes the licence beside it (work.bin, or a single .rif). When the
-              game is built here by this release and the parts add only add-ons (the game's own parts
-              already installed, or left out), only the add-ons are installed: no download, no build
+  --install   repeat for each part, in order: the game, then its update, then add-ons and rePatch mods
+              (a folder or zip with rePatch/<title ID>/, as for the Vita's rePatch plugin). A pkg
+              without --license or --zrif takes the licence beside it (work.bin, or a single .rif).
+              When the game is built here by this release and the parts add only add-ons and mods
+              (the game's own parts already installed, or left out), only those are installed: no
+              download, no build
   --cache    keep the downloads in DIR, shared by every game's setup and kept for the next time
               (default: inside setup/, deleted after a successful build)
   --accept-microsoft-license   Windows only: the compiler's C++ runtime and SDK
@@ -281,7 +283,7 @@ def ask_parts(game):
     """The dump's parts, asked one by one: the game, then its update and add-ons."""
     parts = []
     print(f'\nWhere is your dump of {game["name"]} ({" or ".join([game["title_id"]] + game.get("other_title_ids", []))})? A pkg, a folder, a zip or a vpk.')
-    labels = ['the game', 'its update (1.0x patch)', 'an add-on (DLC)']
+    labels = ['the game', 'its update (1.0x patch)', 'an add-on (DLC) or a rePatch mod']
     step = 0  # the next part asked for: 0 the game, 1 its update, 2 add-ons
     while True:
         label = labels[step]
@@ -375,9 +377,9 @@ def installed_version(out, title_id):
 
 
 def addon_parts(parts, out):
-    """The parts to install when the game is built: those holding add-ons, if every game or update in
-    the parts is installed already (at that version or newer). None when something else is new (a
-    full build) or no part holds an add-on (the player asked to build again)."""
+    """The parts to install when the game is built: those holding add-ons or rePatch mods, if every
+    game or update in the parts is installed already (at that version or newer). None when something
+    else is new (a full build) or no part holds an add-on or mod (the player asked to build again)."""
     addons = []
     for g in part_groups(parts):
         found = dumpinfo.inspect(g[0])
@@ -388,7 +390,7 @@ def addon_parts(parts, out):
                 have, want = installed_version(out, e['title_id']), dumpinfo.version(e['version'])
                 if not have or not want or want > have:
                     return None
-        if any(e['kind'] == 'add-on' for e in found):
+        if any(e['kind'] in ('add-on', 'mod') for e in found):
             addons.append(g)
     return addons or None
 
@@ -543,20 +545,20 @@ def main():
             sys.exit(f'Not installed: {missing}')
     note_other_region_addons(parts, out, ids)
 
-    # the game built here by this release, and the parts bring only add-ons (a launcher's setup run
-    # again for a new add-on): those installed, nothing downloaded or built again
+    # the game built here by this release, and the parts bring only add-ons or mods (a launcher's
+    # setup run again for a new add-on): those installed, nothing downloaded or built again
     addons = addon_parts(parts, out) if parts and not opts.get('--android') and \
         built_by_this_release(game, out, exe) else None
     if addons:
-        print(f'\nThe game is built here already: installing the add-on{"s" if len(addons) > 1 else ""} only')
+        print('\nThe game is built here already: installing only the add-ons and mods')
         for n, g in enumerate(addons):
-            step(0.10 + 0.85 * n / len(addons), 'Installing the add-ons')
+            step(0.10 + 0.85 * n / len(addons), 'Installing the add-ons and mods')
             print(f'installing {os.path.basename(g[0])}')
             cmd = [exe, '--game', out, '--vita-fs', os.path.join(out, 'fs'), '--install-content'] + g
             if run_logged(cmd):
                 sys.exit(f'installing {g[0]} failed (the game\'s log: {os.path.join(out, game["id"], "vita3k.log")})')
         warn_encrypted_addons(out)
-        print('\ndone: the add-ons are installed')
+        print('\ndone: installed')
         step(1.0, 'Done')
         return
     # the downloads: inside setup/ and gone after the build, unless --cache keeps them elsewhere
@@ -619,7 +621,7 @@ def main():
     if not opts.get('--cache'):
         remove(cache)
     warn_encrypted_addons(out)
-    # what built it: a later run with only add-ons installs them without building again
+    # what built it: a later run with only add-ons or mods installs them without building again
     os.makedirs(os.path.dirname(stamp_path(game, out)), exist_ok=True)
     with open(stamp_path(game, out), 'w', encoding='utf-8') as f:
         json.dump({'exe_sha256': sha256(exe), 'built': time.strftime('%Y-%m-%d %H:%M:%S')}, f, indent=1)

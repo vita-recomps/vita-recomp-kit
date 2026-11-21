@@ -1,8 +1,9 @@
 """What a dump holds, read from its param.sfo files: the game, its update (patch) and add-ons, with
 versions and whether a licence is inside (sce_sys/package/work.bin, as NoNpDrm dumps keep it, or a
-.rif in license/addcont/<title>/<dir>/ or license/app/<title>/ when the dump is laid out as ux0). For the
-setup, so it doesn't ask for parts the dump already has. Zips, vpks and folders; a pkg is encrypted
-and stays unknown (None).
+.rif in license/addcont/<title>/<dir>/ or license/app/<title>/ when the dump is laid out as ux0), and
+rePatch mods (files under rePatch/<title>/, no param.sfo; kind 'mod'). For the setup, so it doesn't
+ask for parts the dump already has. Zips, vpks, folders and pkgs (a pkg's header keeps its
+param.sfo unencrypted).
 
   python -I dumpinfo.py <zip|vpk|folder>   prints what it finds
 """
@@ -14,6 +15,8 @@ import zipfile
 
 # Vita categories (param.sfo CATEGORY): the game, its update, an add-on
 KINDS = {'gd': 'game', 'gp': 'update', 'ac': 'add-on'}
+TITLE_ID = re.compile(r'^[A-Z]{4}[0-9]{5}$')
+REPATCH_MEMBER = re.compile(r'^(?:.*/)?(?i:repatch)/([A-Z]{4}[0-9]{5})/.*[^/]$')
 
 
 def parse_sfo(data):
@@ -94,9 +97,44 @@ def pkg_sfo(path):
     return {}
 
 
+def repatch_ids(path):
+    """The title IDs of the rePatch mods in a folder or zip, found as the front end's install_repatch
+    finds them: files under rePatch/<title ID>/ up to three levels down; the folder may also be
+    rePatch/ itself or rePatch/<title ID>/."""
+    if os.path.isdir(path):
+        base = os.path.abspath(path)
+        name, parent = os.path.basename(base), os.path.basename(os.path.dirname(base))
+        if TITLE_ID.match(name) and parent.lower() == 'repatch':
+            return [name]
+
+        def ids(repatch):
+            return sorted(d for d in os.listdir(repatch)
+                          if TITLE_ID.match(d) and os.path.isdir(os.path.join(repatch, d)))
+        if name.lower() == 'repatch':
+            return ids(base)
+        found = []
+        for root, dirs, _ in os.walk(base):
+            if os.path.relpath(root, base).count(os.sep) >= 2 and root != base:
+                dirs[:] = []
+            for d in [d for d in dirs if d.lower() == 'repatch']:
+                found += ids(os.path.join(root, d))
+                dirs.remove(d)
+        return sorted(set(found))
+    if os.path.isfile(path) and zipfile.is_zipfile(path):
+        with zipfile.ZipFile(path) as z:
+            return sorted({m.group(1) for n in z.namelist() for m in [REPATCH_MEMBER.match(n.replace(chr(92), '/'))]
+                           if m})
+    return []
+
+
+def _mods(path):
+    return [{'kind': 'mod', 'title_id': t, 'version': '', 'licence': True} for t in repatch_ids(path)]
+
+
 def inspect(path, max_depth=4):
     """The parts in a zip, vpk, folder or pkg: [{'kind', 'title_id', 'version', 'licence'}], or None
-    when it can't be read (a missing path, a broken archive). A pkg's licence is the one beside it."""
+    when it can't be read (a missing path, a broken archive). A pkg's licence is the one beside it;
+    a rePatch mod (kind 'mod') needs none."""
     parts = []
     try:
         if os.path.isfile(path) and path.lower().endswith('.pkg'):
@@ -124,7 +162,7 @@ def inspect(path, max_depth=4):
                     entry = _entry(sfo, has)
                     if entry:
                         parts.append(entry)
-            return parts
+            return parts + _mods(path)
         if os.path.isfile(path) and zipfile.is_zipfile(path):
             with zipfile.ZipFile(path) as z:
                 names = z.namelist()
@@ -142,7 +180,7 @@ def inspect(path, max_depth=4):
                         entry = _entry(sfo, has)
                         if entry:
                             parts.append(entry)
-            return parts
+            return parts + _mods(path)
     except (OSError, zipfile.BadZipFile, KeyError, ValueError):
         return None
     return None
@@ -151,7 +189,7 @@ def inspect(path, max_depth=4):
 def summary(parts, title_ids):
     """For one game (any of title_ids): the dump's game and update entries and its newest version.
     {'game': entry or None, 'update': entry or None, 'version': (major, minor) or None,
-     'add-ons': count}"""
+     'add-ons': count, 'mods': count}"""
     mine = [p for p in parts or [] if p['title_id'] in title_ids]
     game = next((p for p in mine if p['kind'] == 'game'), None)
     update = max((p for p in mine if p['kind'] == 'update'), key=lambda p: version(p['version']) or (0, 0),
@@ -159,7 +197,7 @@ def summary(parts, title_ids):
     versions = [version(p['version']) for p in mine if p['kind'] in ('game', 'update')]
     versions = [v for v in versions if v]
     return {'game': game, 'update': update, 'version': max(versions) if versions else None,
-            'add-ons': sum(p['kind'] == 'add-on' for p in mine)}
+            'add-ons': sum(p['kind'] == 'add-on' for p in mine), 'mods': sum(p['kind'] == 'mod' for p in mine)}
 
 
 def missing_game(paths, title_ids):
@@ -203,8 +241,9 @@ if __name__ == '__main__':
         sys.exit(__doc__)
     found = inspect(sys.argv[1])
     if found is None:
-        sys.exit(f'{sys.argv[1]}: not readable as a zip, vpk or folder (a pkg is encrypted)')
+        sys.exit(f'{sys.argv[1]}: not readable as a zip, vpk, folder or pkg')
     for p in found:
-        print(f"{p['kind']:7} {p['title_id']} {p['version']}{'  licence inside' if p['licence'] else ''}")
+        print(f"{p['kind']:7} {p['title_id']} {p['version']}"
+              f"{'  licence inside' if p['licence'] and p['kind'] != 'mod' else ''}")
     if found and not any(p['kind'] == 'game' for p in found):
         print('no game: only', ', '.join(sorted({p['kind'] for p in found})))
