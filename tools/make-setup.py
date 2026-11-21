@@ -52,6 +52,7 @@ import zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from gameproject import Project, ico_to_png  # noqa: E402
+from toolchain import msi_admin_install  # noqa: E402
 
 KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PYTHON = '3.12.10'
@@ -323,9 +324,9 @@ def python_windows(lock, out):
         f.write(f'{zipname}\n.\nLib\nLib\\site-packages\n')
     # Tk: an administrative install of the MSI (no elevation), then only what tkinter loads
     with tempfile.TemporaryDirectory() as tmp:
-        r = subprocess.run(['msiexec.exe', '/a', paths['tcltk'][0], '/qn', f'TARGETDIR={tmp}\\tk'])
-        if r.returncode:
-            sys.exit(f'unpacking tcltk.msi failed ({r.returncode})')
+        code = msi_admin_install(paths['tcltk'][0], os.path.join(tmp, 'tk'), '/qn')
+        if code:
+            sys.exit(f'unpacking tcltk.msi failed ({code})')
         tk = os.path.join(tmp, 'tk')
         for f in os.listdir(os.path.join(tk, 'DLLs')):
             shutil.copy2(os.path.join(tk, 'DLLs', f), py)

@@ -115,6 +115,15 @@ def get(url, path=None):
         subprocess.run(args + ['-o', path], check=True, **quiet)
 
 
+def msi_admin_install(msi, target, *options):
+    """Unpack an MSI into target with an administrative install (no elevation); msiexec's exit code.
+    msiexec reads PROPERTY="value" and nothing else: Python's quoting of a list turns a TARGETDIR
+    with a space (a temp folder under a user name with a space) into "TARGETDIR=...", which msiexec
+    rejects with 1639 and its usage window (ss-delta issue #9). Hence a command line written by hand."""
+    cmd = subprocess.list2cmdline(['msiexec.exe', '/a', os.path.abspath(msi), *options]) + f' TARGETDIR="{os.path.abspath(target)}"'
+    return subprocess.run(cmd).returncode
+
+
 def sha256(path):
     h = hashlib.sha256()
     with open(path, 'rb') as f:
@@ -271,9 +280,9 @@ def fetch(lock_path, dest, accepted):
         target = os.path.join(tmp, 'out')
         for p in lock['payloads']:
             if p['kind'] == 'msi':
-                r = subprocess.run(['msiexec.exe', '/a', os.path.join(tmp, p['file']), '/quiet', '/qn', f'TARGETDIR={target}'])
-                if r.returncode:
-                    sys.exit(f'{p["file"]}: msiexec failed ({r.returncode})')
+                code = msi_admin_install(os.path.join(tmp, p['file']), target, '/quiet', '/qn')
+                if code:
+                    sys.exit(f'{p["file"]}: msiexec failed ({code})')
         kits = os.path.join(target, 'Windows Kits', '10')
         shutil.copytree(os.path.join(kits, 'Include'), os.path.join(sdk_dir, 'Include'))
         for version in os.listdir(os.path.join(kits, 'Lib')):
