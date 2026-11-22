@@ -1,12 +1,14 @@
 """What a dump holds, read from its param.sfo files: the game, its update (patch) and add-ons, with
 versions and whether a licence is inside (sce_sys/package/work.bin, as NoNpDrm dumps keep it, or a
 .rif in license/addcont/<title>/<dir>/ or license/app/<title>/ when the dump is laid out as ux0), and
-rePatch mods (files under rePatch/<title>/, no param.sfo; kind 'mod'). For the setup, so it doesn't
+rePatch mods (files under rePatch/<title>/, no param.sfo; kind 'mod', as are packaged mods, a zip or
+folder with an ss-delta-mod.json). For the setup, so it doesn't
 ask for parts the dump already has. Zips, vpks, folders and pkgs (a pkg's header keeps its
 param.sfo unencrypted).
 
   python -I dumpinfo.py <zip|vpk|folder>   prints what it finds
 """
+import json
 import os
 import re
 import struct
@@ -127,8 +129,39 @@ def repatch_ids(path):
     return []
 
 
+PACKAGED_MOD = 'ss-delta-mod.json'
+
+
+def packaged_mod_titles(path):
+    """A packaged mod (the front end's packaged_mods.h: a zip or folder with ss-delta-mod.json at
+    its top or in one folder): the title IDs its manifest names (['?'] when it names none); [] when
+    path is none."""
+    text = None
+    try:
+        if os.path.isdir(path):
+            for d in [path] + [os.path.join(path, n) for n in sorted(os.listdir(path))]:
+                if os.path.isfile(os.path.join(d, PACKAGED_MOD)):
+                    with open(os.path.join(d, PACKAGED_MOD), 'rb') as f:
+                        text = f.read()
+                    break
+        elif os.path.isfile(path) and zipfile.is_zipfile(path):
+            with zipfile.ZipFile(path) as z:
+                for n in z.namelist():
+                    parts = n.replace(chr(92), '/').split('/')
+                    if parts[-1] == PACKAGED_MOD and len(parts) <= 2:
+                        text = z.read(n)
+                        break
+        if text is None:
+            return []
+        manifest = json.loads(text.decode('utf-8'))
+        return [str(t) for t in manifest.get('titles', [])] or ['?']
+    except (OSError, ValueError, zipfile.BadZipFile):
+        return []
+
+
 def _mods(path):
-    return [{'kind': 'mod', 'title_id': t, 'version': '', 'licence': True} for t in repatch_ids(path)]
+    ids = repatch_ids(path) or packaged_mod_titles(path)[:1]
+    return [{'kind': 'mod', 'title_id': t, 'version': '', 'licence': True} for t in ids]
 
 
 def inspect(path, max_depth=4):
