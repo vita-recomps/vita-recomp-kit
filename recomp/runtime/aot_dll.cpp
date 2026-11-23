@@ -7,7 +7,7 @@
 #ifdef _WIN32
 #define ARMRECOMP_EXPORT __declspec(dllexport)
 #else
-// the module is built with hidden visibility: only the entry point is exported
+// the module is built with hidden visibility: only the entry points are exported
 #define ARMRECOMP_EXPORT __attribute__((visibility("default")))
 #endif
 
@@ -49,3 +49,16 @@ extern "C" ARMRECOMP_EXPORT const armrecomp::AotModule *armrecomp_aot_init(const
                                   g_code_hash, g_patched, g_patched_count, g_resumes, g_resume_count};
     return &module;
 }
+
+// The features the game project's overrides name (table.cpp, from recompile.py --overrides;
+// aot_abi.h ARMRECOMP_AOT_FEATURES). Code generated before they existed has no table entry: the
+// reference then falls back to an empty string, so such a module still links.
+extern "C" const char armrecomp_features[];
+#ifdef _MSC_VER
+extern "C" const char armrecomp_features_none[] = "";
+#pragma comment(linker, "/alternatename:armrecomp_features=armrecomp_features_none")
+extern "C" ARMRECOMP_EXPORT const char *armrecomp_aot_features() { return armrecomp_features; }
+#else
+extern "C" __attribute__((weak)) const char armrecomp_features[];
+extern "C" ARMRECOMP_EXPORT const char *armrecomp_aot_features() { return armrecomp_features ? armrecomp_features : ""; }
+#endif

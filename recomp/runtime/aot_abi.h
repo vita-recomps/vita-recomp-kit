@@ -86,3 +86,8 @@ using AotInitFn = const AotModule *(*)(const AotHost *host);
 } // namespace armrecomp
 
 #define ARMRECOMP_AOT_INIT "armrecomp_aot_init"
+
+// Optional second export (not part of the ABI version: older modules lack it): `extern "C" const char
+// *armrecomp_aot_features()`, the features the game project's overrides name (recompile.py
+// --overrides, "features"), separated by spaces; "" when there are none.
+#define ARMRECOMP_AOT_FEATURES "armrecomp_aot_features"

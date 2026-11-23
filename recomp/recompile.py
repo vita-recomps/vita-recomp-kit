@@ -12,7 +12,9 @@ instruction of a recompiled function, or nothing is written:
   {"prelude": ["C++ put before the code of each file that holds an override (includes, inline
                 thread_local variables the overrides share)"],
    "overrides": [{"address": "8153f31a", "insn": "vmov.f32 s2, #1.000000e+00",
-                  "code": ["ctx->vfp.f[2] = ...;"], "why": "what it fixes"}]}
+                  "code": ["ctx->vfp.f[2] = ...;"], "why": "what it fixes"}],
+   "features": ["names the module reports (runtime/aot_dll.cpp armrecomp_aot_features), so that the
+                host can tell a module built with the fixes from an older one"]}
 
 Writes to <out dir> (under generated/, never committed):
   funcs.h          prototypes of every recompiled function
@@ -60,7 +62,7 @@ class Override:
 
 
 def load_overrides(path):
-    """--overrides: (address -> Override, prelude lines)"""
+    """--overrides: (address -> Override, prelude lines, feature names)"""
     with open(path, encoding='utf-8') as fh:
         doc = json.load(fh)
     overrides = {}
@@ -70,7 +72,10 @@ def load_overrides(path):
             sys.exit(f'{path}: two overrides at {ov.address:08x}')
         overrides[ov.address] = ov
     prelude = doc.get('prelude', [])
-    return overrides, [prelude] if isinstance(prelude, str) else list(prelude)
+    features = [str(f) for f in doc.get('features', [])]
+    if any(not f or any(c.isspace() or c in '"\\' for c in f) for f in features):
+        sys.exit(f'{path}: a feature name is empty or holds a space, quote or backslash')
+    return overrides, [prelude] if isinstance(prelude, str) else list(prelude), features
 
 
 class Output(io.StringIO):
@@ -106,9 +111,9 @@ def main():
     load_base = int(args[args.index('--load-base') + 1], 16) if '--load-base' in args else None
     if '--only' in args:
         only = {int(x, 16) for x in args[args.index('--only') + 1].split(',')}
-    overrides, prelude = {}, []
+    overrides, prelude, features = {}, [], []
     if '--overrides' in args:
-        overrides, prelude = load_overrides(args[args.index('--overrides') + 1])
+        overrides, prelude, features = load_overrides(args[args.index('--overrides') + 1])
     os.makedirs(out, exist_ok=True)
     t0 = time.time()
     mod = Module(elf, load_base=load_base)
@@ -216,6 +221,8 @@ def main():
         fh.write('};\n')
         fh.write(f'extern const uint32_t g_resume_count = {len(resumes)};\n')
         fh.write('} // namespace armrecomp\n')
+        # the overrides' features (aot_abi.h ARMRECOMP_AOT_FEATURES, runtime/aot_dll.cpp)
+        fh.write(f'extern "C" const char armrecomp_features[] = "{" ".join(features)}";\n')
 
     lines = [
         f'{os.path.basename(elf)}: {len(native)} functions recompiled, left to the fallback CPU: {dict(reasons)}',

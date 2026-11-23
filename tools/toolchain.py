@@ -64,10 +64,11 @@ ZIG_TARGET = (['-target', 'aarch64-macos.13.3', '-mcpu=apple_m1'] if MACOS else
 ZIG_CXXFLAGS = ['-std=c++20', '-O2', '-fPIC', '-fvisibility=hidden', '-fvisibility-inlines-hidden', '-DNDEBUG']
 # no contraction, as in recomp/CMakeLists.txt: ARMv7's vmla/vmls round twice (it matters on arm64 hosts)
 ZIG_GEN_FLAGS = ['-O1', '-w', '-ffp-contract=off', '-DRECOMP_COUNT_INSNS']
-# a module exports its entry point and nothing else (libc++'s operator new/delete stay inside). zig's
-# Mach-O linker takes no export list: there, hidden visibility leaves the entry point and libc++'s
+# a module exports its entry points (armrecomp_aot_init, armrecomp_aot_features) and nothing else
+# (libc++'s operator new/delete stay inside). zig's Mach-O linker takes no export list: there, hidden
+# visibility leaves the entry points and libc++'s
 # operator new/delete, which two-level namespaces keep from binding anything outside the module
-ZIG_EXPORTS = '{\n  global: armrecomp_aot_init;\n  local: *;\n};\n'
+ZIG_EXPORTS = '{\n  global: armrecomp_aot_init; armrecomp_aot_features;\n  local: *;\n};\n'
 # Android: arm64 with musl's headers (the functions a module calls have the same ABI in bionic), every
 # ARMv8 (LL/SC atomics inline: no outline atomics, which would want compiler-rt and getauxval), unwind
 # tables for the escapes the host throws through generated frames, no stack protector (bionic's guard
