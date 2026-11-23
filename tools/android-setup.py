@@ -109,7 +109,7 @@ def build(a, p):
     gen = os.path.join(work, 'generated')
     for i, (m, target) in enumerate(p.modules.items()):
         say('step', f'Recompiling {m} ({i + 1}/{len(p.modules)})')
-        base = ['--load-base', p.load_bases[m]] if m in p.load_bases else []
+        base = p.recompile_args(m)
         r = subprocess.run([sys.executable, os.path.join(KIT, 'recomp', 'recompile.py'), os.path.join(elf_dir, m + '.elf'),
                             os.path.join(gen, target)] + base, capture_output=True, text=True)
         for line in r.stdout.splitlines():

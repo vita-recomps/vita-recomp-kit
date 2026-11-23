@@ -14,6 +14,11 @@ so a frame the fallback CPU took over after an escape (a fiber switch) runs nati
 callee returns. The function's orphan entries (code the inventory found no path to, such as the
 helpers a hand-written routine calls and jumps to through computed pc-relative addresses) are resume
 points too, so those computed calls and jumps find native code.
+
+Overrides (recompile.py --overrides): a game project can replace the translation of single plain
+instructions (no branches, calls or flag results anyone reads) with its own C++, to fix the game's
+code without changing its bytes, so the code hash and the fallback CPU's view of the code stay as
+they are. Each one names the instruction it expects; any other code there is an error.
 """
 from . import semantics
 
@@ -28,11 +33,13 @@ def fname(addr):
 
 
 class FunctionEmitter:
-    def __init__(self, func, module, recompiled):
+    def __init__(self, func, module, recompiled, overrides=None):
         self.f = func
         self.module = module
         self.recompiled = recompiled  # set of function starts that have native code
         self.imports = module.imports
+        # address -> Override (recompile.py --overrides): C++ that replaces an instruction's translation
+        self.overrides = overrides or {}
 
     def translate_all(self):
         f = self.f
@@ -164,7 +171,21 @@ class FunctionEmitter:
                 else:
                     body.append(s)
             body += self.control(i, ins, t)
-            out.append(f'    // {ins.address:08x}: {cs.mnemonic} {cs.op_str}')
+            note = ''
+            ov = self.overrides.get(ins.address)
+            if ov is not None:
+                text = f'{cs.mnemonic} {cs.op_str}'
+                if text != ov.insn:
+                    raise ValueError(f'override at {ins.address:08x}: expected "{ov.insn}", the code has "{text}"')
+                if t.kind != 'seq':
+                    raise ValueError(f'override at {ins.address:08x}: "{text}" is not a plain instruction ({t.kind})')
+                if t.flags_written & live_out[i]:
+                    raise ValueError(f'override at {ins.address:08x}: "{text}" sets flags that later code reads')
+                body = list(ov.code)
+                ov.used = True
+                stats['overrides'] = stats.get('overrides', 0) + 1
+                note = f'  [override: {ov.why}]' if ov.why else '  [override]'
+            out.append(f'    // {ins.address:08x}: {cs.mnemonic} {cs.op_str}{note}')
             if body:
                 if ins.it_cond:
                     out.append(f'    if ({semantics.COND_EXPR[ins.it_cond]}) {{')

@@ -178,7 +178,7 @@ def main():
         gen = os.path.join(work, 'generated')
         for m, target in p.modules.items():
             print('recompiling', m)
-            base = ['--load-base', p.load_bases[m]] if m in p.load_bases else []
+            base = p.recompile_args(m)
             # recompile.py needs its own folder on the path, so it runs without -I
             r = subprocess.run([sys.executable, os.path.join(RECOMP, 'recompile.py'), os.path.join(elf_dir, m + '.elf'),
                                 os.path.join(gen, target)] + base, capture_output=True, text=True)

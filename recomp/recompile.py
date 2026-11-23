@@ -1,9 +1,18 @@
 """Recompile a Vita module's code to C++ (plan Phase 3, docs/decisions.md D6).
 
 usage: python -I recomp/recompile.py <elf> <out dir> [--load-base HEX] [--bucket-bytes N] [--only ADDR,...]
+                                     [--overrides FILE]
 
 --load-base: where Vita3K loads a relocatable module's code segment (libc 8031e000, libfios2
 8036f000, libult 80454000 on 1.30); the code is generated for that address
+--overrides: a game project's fixes to the module's code (JSON), as C++ that replaces the
+translation of single instructions (armrecomp/emit.py). The game's bytes stay as they are, so the
+code hash doesn't change; the fallback CPU runs the original code. Every entry must match an
+instruction of a recompiled function, or nothing is written:
+  {"prelude": ["C++ put before the code of each file that holds an override (includes, inline
+                thread_local variables the overrides share)"],
+   "overrides": [{"address": "8153f31a", "insn": "vmov.f32 s2, #1.000000e+00",
+                  "code": ["ctx->vfp.f[2] = ...;"], "why": "what it fixes"}]}
 
 Writes to <out dir> (under generated/, never committed):
   funcs.h          prototypes of every recompiled function
@@ -12,7 +21,7 @@ Writes to <out dir> (under generated/, never committed):
                    (aot_abi.h)
   report.txt       coverage: recompiled / left to the fallback CPU, unsupported instructions
 """
-import bisect, collections, glob, io, os, sys, time
+import bisect, collections, glob, io, json, os, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from armrecomp.frontend import Module  # noqa: E402
@@ -38,6 +47,30 @@ def translatable(f, mod):
     return all(semantics.translate(ins, f.thumb, mod.imports, f.start, f.end, f.jumptables, mod.patched).kind != 'unsupported'
                or (f.thumb and not ins.mnemonic.startswith('v'))
                for ins in f.instructions)
+
+
+class Override:
+    def __init__(self, entry):
+        self.address = int(str(entry['address']), 16)
+        self.insn = entry['insn']
+        code = entry['code']
+        self.code = [code] if isinstance(code, str) else list(code)
+        self.why = entry.get('why', '')
+        self.used = False
+
+
+def load_overrides(path):
+    """--overrides: (address -> Override, prelude lines)"""
+    with open(path, encoding='utf-8') as fh:
+        doc = json.load(fh)
+    overrides = {}
+    for entry in doc.get('overrides', []):
+        ov = Override(entry)
+        if ov.address in overrides:
+            sys.exit(f'{path}: two overrides at {ov.address:08x}')
+        overrides[ov.address] = ov
+    prelude = doc.get('prelude', [])
+    return overrides, [prelude] if isinstance(prelude, str) else list(prelude)
 
 
 class Output(io.StringIO):
@@ -73,6 +106,9 @@ def main():
     load_base = int(args[args.index('--load-base') + 1], 16) if '--load-base' in args else None
     if '--only' in args:
         only = {int(x, 16) for x in args[args.index('--only') + 1].split(',')}
+    overrides, prelude = {}, []
+    if '--overrides' in args:
+        overrides, prelude = load_overrides(args[args.index('--overrides') + 1])
     os.makedirs(out, exist_ok=True)
     t0 = time.time()
     mod = Module(elf, load_base=load_base)
@@ -96,12 +132,18 @@ def main():
     unsupported = collections.Counter()
     totals = collections.Counter()
     buckets, current, size = [], [], 0
+    with_overrides = set()  # buckets holding overridden instructions: they get the prelude
     resumes = []  # (resume address | Thumb, function)
     for f in native:
-        text, stats = FunctionEmitter(f, mod, recompiled).emit()
+        try:
+            text, stats = FunctionEmitter(f, mod, recompiled, overrides).emit()
+        except ValueError as e:
+            sys.exit(f'{os.path.basename(elf)}: {e}')
         f.release()
         resumes += [(a | (1 if f.thumb else 0), f) for a in stats.pop('resumes')]
         totals.update(stats)
+        if stats.get('overrides'):
+            with_overrides.add(len(buckets))
         if stats['unsupported']:
             totals['functions_with_unsupported'] += 1
             for line in text.splitlines():
@@ -114,13 +156,21 @@ def main():
             current, size = [], 0
     if current:
         buckets.append(current)
+    unused = sorted(a for a, ov in overrides.items() if not ov.used)
+    if unused:
+        sys.exit(f'{os.path.basename(elf)}: overrides outside the recompiled code: '
+                 + ', '.join(f'{a:08x}' for a in unused))
 
     for stale in glob.glob(os.path.join(out, 'bucket_*.cpp')):
         if int(os.path.basename(stale)[7:10]) >= len(buckets):
             os.remove(stale)
     for i, b in enumerate(buckets):
         with Output(os.path.join(out, f'bucket_{i:03d}.cpp')) as fh:
-            fh.write(HEADER.format(elf=os.path.basename(elf)))
+            header = HEADER.format(elf=os.path.basename(elf))
+            if i in with_overrides and prelude:
+                header = header.replace('namespace armrecomp {', "// the game project's overrides (recompile.py --overrides)\n"
+                                        + '\n'.join(prelude) + '\n\nnamespace armrecomp {', 1)
+            fh.write(header)
             fh.write('\n\n'.join(b))
             fh.write('\n\n} // namespace armrecomp\n')
     with Output(os.path.join(out, 'funcs.h')) as fh:
@@ -172,6 +222,7 @@ def main():
         f'instructions: {totals["insns"]}, unsupported: {totals["unsupported"]} in {totals["functions_with_unsupported"]} functions',
         f'flag writes dropped as dead: {totals["flags_dropped"]}',
         f'resume points (call return sites): {len(resumes)}',
+        f'overrides: {totals["overrides"]}',
         f'buckets: {len(buckets)} (about {bucket_bytes} bytes of guest code each)',
         f'code hash: {code_hash:016x}',
         'unsupported by mnemonic: ' + ', '.join(f'{m} {n}' for m, n in unsupported.most_common(40)),

@@ -14,6 +14,9 @@ game.json:
     "modules": {"eboot": "eboot", "libc": "libc", "sysmodule": "fw_sysmodule"},
                                               module as dumped -> generated/<name> (recompiled)
     "load_bases": {"adhoc_matching": "80757000"},   modules recompiled for another address
+    "recomp_overrides": {"eboot": "recomp/eboot-overrides.json"}   fixes to a module's code, passed
+                                              to recompile.py --overrides (project paths; a release
+                                              carries them, make-setup.py)
     "dump_seconds": 45,                       how long --dump-elfs runs the game
     "dist_readme": "docs/dist-readme.txt",    README.txt of the packaged folder (project path)
     "dist_readme_linux": "docs/dist-readme-linux.txt",   the same on Linux (default: dist_readme)
@@ -72,6 +75,7 @@ class Project:
         self.eboot_sha256_other = {k.lower(): v for k, v in g.get('eboot_sha256_other', {}).items()}
         self.modules = g.get('modules', {})
         self.load_bases = g.get('load_bases', {})
+        self.recomp_overrides = g.get('recomp_overrides', {})
         self.dump_seconds = g.get('dump_seconds', 45)
         if WINDOWS:
             self.dist_readme, self.dist_files = g.get('dist_readme'), g.get('dist_files', {})
@@ -84,6 +88,13 @@ class Project:
         # the game's APK, as game-frontend/android/build.gradle names it by default
         self.android_package = g.get('android_package') or 'io.github.vitarecomps.' + ''.join(
             c for c in self.id.lower() if c.isalnum())
+
+    def recompile_args(self, module):
+        """recompile.py's options for a module (as dumped): its load base and the project's overrides."""
+        args = ['--load-base', self.load_bases[module]] if module in self.load_bases else []
+        if module in self.recomp_overrides:
+            args += ['--overrides', os.path.join(self.root, self.recomp_overrides[module])]
+        return args
 
     def unsupported_eboot(self, digest, log):
         """Why the installed eboot.bin (its SHA-256) can't be used, for the setup's message."""

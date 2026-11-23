@@ -13,7 +13,7 @@ folder:
                           output depends on capstone's): Windows, python.org's embeddable
                           distribution and tcltk.msi; Linux and macOS, python-build-standalone
   setup/kit/recomp, setup/kit/tools   this kit's recompiler and tools (tools/setup.py: the importer)
-  setup/kit/game/         game.json and the README's source
+  setup/kit/game/         game.json, the README's source and the code overrides game.json names
   setup/android/<id>.apk  with --apk: the game's APK, which setup.py --android puts on a device
 
 Nothing derived from a game or the firmware goes in: release checks refuse such files.
@@ -287,7 +287,8 @@ def release_check(out):
 
 
 def copy_kit(out, p):
-    """setup/kit: this kit's recompiler and tools; setup/kit/game: game.json and the README's source."""
+    """setup/kit: this kit's recompiler and tools; setup/kit/game: game.json, the README's source and the
+    recompiler overrides game.json names (recomp_overrides)."""
     kit = os.path.join(out, 'setup', 'kit')
     copy_tree(os.path.join(KIT, 'recomp'), os.path.join(kit, 'recomp'))
     os.makedirs(os.path.join(kit, 'tools'))
@@ -297,9 +298,9 @@ def copy_kit(out, p):
     game = os.path.join(kit, 'game')
     os.makedirs(game)
     shutil.copy2(os.path.join(p.root, 'game.json'), game)
-    if p.dist_readme:
-        os.makedirs(os.path.dirname(os.path.join(game, p.dist_readme)), exist_ok=True)
-        shutil.copy2(os.path.join(p.root, p.dist_readme), os.path.join(game, p.dist_readme))
+    for rel in ([p.dist_readme] if p.dist_readme else []) + sorted(set(p.recomp_overrides.values())):
+        os.makedirs(os.path.dirname(os.path.join(game, rel)), exist_ok=True)
+        shutil.copy2(os.path.join(p.root, rel), os.path.join(game, rel))
 
 
 def downloads_dir(out):
