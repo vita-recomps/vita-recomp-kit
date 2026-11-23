@@ -45,12 +45,26 @@ def version(text):
     return (int(m.group(1)), int(m.group(2))) if m else None
 
 
-def _entry(sfo, has_licence):
+def _entry(sfo, has_licence, account_licence=False):
     kind = KINDS.get(str(sfo.get('CATEGORY', '')))
     if not kind:
         return None
     return {'kind': kind, 'title_id': str(sfo.get('TITLE_ID', '')),
-            'version': str(sfo.get('APP_VER') or sfo.get('VERSION') or ''), 'licence': has_licence}
+            'version': str(sfo.get('APP_VER') or sfo.get('VERSION') or ''), 'licence': has_licence,
+            'account_licence': account_licence}
+
+
+FAKE_AID = bytes.fromhex('efcdab8967452301')  # NoNpDrm's account ID, 0x0123456789ABCDEF little-endian
+
+
+def licence_kind(data):
+    """A licence (.rif, work.bin) by its account ID at 0x08: 'nonpdrm' (NoNpDrm's, and the work.bin made
+    from a zRIF: the key in the clear), 'account' (the PSN account's own, as a Vita keeps it with a game it
+    installed: its key works only on that Vita), None when it's too short to be one. As the front end's
+    license_kind (ss-delta #13)."""
+    if len(data) < 0x200:
+        return None
+    return 'nonpdrm' if data[8:16] == FAKE_AID else 'account'
 
 
 def ux0_licence_dir(sfo):
@@ -183,7 +197,13 @@ def inspect(path, max_depth=4):
                     name = next(f for f in files if f.lower() == 'param.sfo')
                     with open(os.path.join(root, name), 'rb') as f:
                         sfo = parse_sfo(f.read(1 << 16))
-                    has = os.path.exists(os.path.join(root, 'package', 'work.bin'))
+                    work_bin = os.path.join(root, 'package', 'work.bin')
+                    has = os.path.exists(work_bin)
+                    account = False
+                    if has:
+                        with open(work_bin, 'rb') as f:
+                            account = licence_kind(f.read(0x200)) == 'account'
+                        has = not account
                     dirs = ux0_licence_dir(sfo)
                     content = os.path.dirname(root)
                     if not has and dirs and content.replace(os.sep, '/').lower().endswith(dirs[1].rstrip('/').lower()):
@@ -192,7 +212,7 @@ def inspect(path, max_depth=4):
                             top = os.path.dirname(top)
                         lic = os.path.join(top, *dirs[0].split('/'))
                         has = os.path.isdir(lic) and any(f.lower().endswith('.rif') for f in os.listdir(lic))
-                    entry = _entry(sfo, has)
+                    entry = _entry(sfo, has, account and not has)
                     if entry:
                         parts.append(entry)
             return parts + _mods(path)
@@ -204,13 +224,15 @@ def inspect(path, max_depth=4):
                     if n.lower().endswith('sce_sys/param.sfo') or n.lower() == 'sce_sys/param.sfo':
                         prefix = n[:-len('param.sfo')]
                         sfo = parse_sfo(z.read(n))
-                        has = (prefix + 'package/work.bin').lower() in lower
+                        work_bin = next((x for x in names if x.lower() == (prefix + 'package/work.bin').lower()), None)
+                        account = bool(work_bin) and licence_kind(z.read(work_bin)) == 'account'
+                        has = bool(work_bin) and not account
                         dirs = ux0_licence_dir(sfo)
                         content = prefix[:-len('sce_sys/')]
                         if not has and dirs and content.lower().endswith(dirs[1].lower()):
                             lic = (content[:-len(dirs[1])] + dirs[0]).lower()
                             has = any(x.startswith(lic) and x.endswith('.rif') for x in lower)
-                        entry = _entry(sfo, has)
+                        entry = _entry(sfo, has, account and not has)
                         if entry:
                             parts.append(entry)
             return parts + _mods(path)
@@ -256,6 +278,26 @@ def missing_game(paths, title_ids):
             f'A NoNpDrm dump keeps the game in app/{tid} and the update in patch/{tid}: give the folder '
             f'that holds both (or the dump\'s zip), or the game\'s folder then the update\'s. The game and '
             f'its update unpacked into one {tid} folder don\'t work: the update\'s files replace the game\'s.')
+
+
+def account_licences(groups, title_ids):
+    """For a setup's parts ([[path, its --license/--zrif args ...], ...]): why a game or add-on in them can't
+    be installed because its only licence is the PSN account's own (a folder copied off a Vita), else None.
+    A part given with a licence is fine."""
+    for group in groups:
+        if len(group) > 1:
+            continue
+        found = [p for p in inspect(group[0]) or [] if p['title_id'] in title_ids and p.get('account_licence')]
+        if found:
+            tid = found[0]['title_id']
+            what = ' and '.join(sorted({p['kind'] for p in found}))
+            return (f'{os.path.normpath(group[0])}: the {what}\'s licence is the PSN account\'s own, as a Vita keeps it '
+                    f'with a game it installed. Its key works only on that Vita, so the files can\'t be decrypted '
+                    f'here: it needs a NoNpDrm dump. With the NoNpDrm plugin loaded on the Vita, start the game '
+                    f'once: it writes a licence that works anywhere, ux0:nonpdrm/license/app/{tid}/'
+                    f'6488b73b912a753a492e2714e9b38bc7.rif. Copy ux0:nonpdrm/license into the dump as license/, '
+                    f'next to app/ and patch/ (or give the .rif as the licence).')
+    return None
 
 
 def supported_version(game):

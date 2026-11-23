@@ -80,8 +80,7 @@ def check(a, p):
             h.update(chunk)
     build = p.eboot_sha256.get(h.hexdigest())
     if p.eboot_sha256 and not build:
-        fail(f'the installed game ({title}) is not a version this port supports ({", ".join(sorted(set(p.eboot_sha256.values())))}): '
-             'install its update with it (a dump with the update included, or the update after the game)')
+        fail(f'the installed game ({title}): ' + p.unsupported_eboot(h.hexdigest(), 'the setup log'))
     print(f'{title}: {build or "eboot.bin"}', flush=True)
     say('done')
 

@@ -259,7 +259,9 @@ class Window:
             held = []
             if info['game']:
                 held.append(f'the game {dumpinfo.label(dumpinfo.version(info["game"]["version"]))}'
-                            + (' with its licence' if info['game']['licence'] else ', no licence inside'))
+                            + (' with its licence' if info['game']['licence'] else
+                               ', with your PSN account\'s licence (usable only on your Vita)'
+                               if info['game'].get('account_licence') else ', no licence inside'))
             if info['update']:
                 held.append(f'the update {dumpinfo.label(dumpinfo.version(info["update"]["version"]))}')
             if info['add-ons']:
@@ -269,7 +271,11 @@ class Window:
             text = 'Found in this dump: ' + ', '.join(held) + '.'
             if need and (not have or have < need):
                 text += f' The port needs version {dumpinfo.label(need)}: add the update.'
-            if game.needs_licence:
+            if game.needs_licence and info['game'].get('account_licence'):
+                tid = info['game']['title_id']
+                text += (f' Add its NoNpDrm licence: with the NoNpDrm plugin, start the game once on the Vita, '
+                         f'then give ux0:nonpdrm/license/app/{tid}/6488b73b912a753a492e2714e9b38bc7.rif.')
+            elif game.needs_licence:
                 text += ' Add the game\'s licence (work.bin, .rif or zRIF).'
             self.dump_note['text'] = text
 

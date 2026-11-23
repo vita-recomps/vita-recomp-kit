@@ -9,6 +9,8 @@ game.json:
     "other_title_ids": ["PCSB00123"],         the same game in other regions (optional): the
                                               installed one is used; title_id names the game
     "eboot_sha256": {"<sha256>": "1.02"},     the eboot.bin builds the port supports
+    "eboot_sha256_other": {"<sha256>": "1.00"},   other builds, named when the setup refuses one (a game
+                                              installed without its update)
     "modules": {"eboot": "eboot", "libc": "libc", "sysmodule": "fw_sysmodule"},
                                               module as dumped -> generated/<name> (recompiled)
     "load_bases": {"adhoc_matching": "80757000"},   modules recompiled for another address
@@ -67,6 +69,7 @@ class Project:
         self.title_id = g['title_id']
         self.title_ids = [self.title_id] + [t for t in g.get('other_title_ids', []) if t != self.title_id]
         self.eboot_sha256 = {k.lower(): v for k, v in g.get('eboot_sha256', {}).items()}
+        self.eboot_sha256_other = {k.lower(): v for k, v in g.get('eboot_sha256_other', {}).items()}
         self.modules = g.get('modules', {})
         self.load_bases = g.get('load_bases', {})
         self.dump_seconds = g.get('dump_seconds', 45)
@@ -81,6 +84,17 @@ class Project:
         # the game's APK, as game-frontend/android/build.gradle names it by default
         self.android_package = g.get('android_package') or 'io.github.vitarecomps.' + ''.join(
             c for c in self.id.lower() if c.isalnum())
+
+    def unsupported_eboot(self, digest, log):
+        """Why the installed eboot.bin (its SHA-256) can't be used, for the setup's message."""
+        supported = ', '.join(sorted(set(self.eboot_sha256.values())))
+        other = self.eboot_sha256_other.get(digest)
+        if other:
+            return (f'eboot.bin is the game\'s version {other}, not one this port supports ({supported}): its update '
+                    f'wasn\'t installed over it. Give the update with the game (a dump holding both app/ and patch/, '
+                    f'or the update as a part of its own); {log} says why it wasn\'t installed')
+        return (f'eboot.bin is not a build this port supports ({supported}; SHA-256 {digest}): '
+                'install the game\'s update with it')
 
     def installed_title(self, fs):
         """The title ID of the game installed in a Vita file system (ux0/app/<id>/eboot.bin), or None."""

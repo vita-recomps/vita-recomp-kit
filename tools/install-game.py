@@ -152,9 +152,7 @@ def main():
     with open(eboot, 'rb') as f:
         digest = hashlib.sha256(f.read()).hexdigest()
     if p.eboot_sha256 and digest not in p.eboot_sha256:
-        supported = ', '.join(sorted(set(p.eboot_sha256.values())))
-        sys.exit(f'eboot.bin is not a build this port supports ({supported}; SHA-256 {digest}): '
-                 'install the game\'s update with it')
+        sys.exit(p.unsupported_eboot(digest, os.path.join(bin_dir, p.id, 'vita3k.log')))
     print(f'eboot.bin ({title}):', p.eboot_sha256.get(digest, digest))
 
     recompiled_dir = os.path.join(work, 'build')

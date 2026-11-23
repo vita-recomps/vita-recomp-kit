@@ -543,6 +543,10 @@ def main():
                                         ids)
         if missing:
             sys.exit(f'Not installed: {missing}')
+    # a folder copied straight off a Vita: its licence is the account's, unusable here (ss-delta #13)
+    unusable = dumpinfo.account_licences(part_groups(parts), ids) if parts else None
+    if unusable:
+        sys.exit(f'Not installed: {unusable}')
     note_other_region_addons(parts, out, ids)
 
     # the game built here by this release, and the parts bring only add-ons or mods (a launcher's
