@@ -26,12 +26,12 @@ usage:
   --exe           the front end's executable, when it isn't <bin>/<id><suffix> (macOS: inside the
                   release's app bundle)
   --work          the work files (default <out>-work)
-  --toolchain     compile with the toolchain toolchain.py unpacked there (no Visual Studio, CMake or
-                  Ninja); otherwise MSVC, CMake and Ninja
+  --toolchain     compile with the zig toolchain.py unpacked there (no Visual Studio, CMake or Ninja);
+                  otherwise MSVC, CMake and Ninja
   --out           the playable folder (default dist/<name>); the work files go to <out>-work
   --android       also build the modules for the game's Android APK (arm64), with the zig toolchain.py
-                  unpacked in DIR (Windows: toolchain-android-windows.json; Linux and macOS: their own
-                  lock file's zig), into <out>/android/; android.py push puts them and fs/ on a device
+                  unpacked in DIR (the PC's, --toolchain's), into <out>/android/; android.py push puts
+                  them and fs/ on a device
   --android-only  only the modules for Android: no PC modules, the folder itself left as it is. Without
                   --install (and --firmware), the game already installed in <out>/fs is used: a built
                   folder needs no dump again
@@ -212,8 +212,6 @@ def main():
             '--project', p.root, '--out', out]
     dist += ['--bin', bin_dir] if a.bin else []
     dist += ['--exe', exe] if a.exe else []
-    # the VC++ runtime DLLs (the Windows toolchain only)
-    dist += ['--redist', os.path.join(a.toolchain, 'redist')] if a.toolchain and os.path.isdir(os.path.join(a.toolchain, 'redist')) else []
     dist += ['--recompiled-dir', recompiled_dir] if not a.no_recompile and p.modules else ['--no-recompiled']
     dist += ['--no-jit'] if a.no_jit else []
     code = 0 if a.android_only else subprocess.run(dist).returncode

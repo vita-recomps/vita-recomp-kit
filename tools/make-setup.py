@@ -13,6 +13,9 @@ folder:
                           output depends on capstone's): Windows, python.org's embeddable
                           distribution and tcltk.msi; Linux and macOS, python-build-standalone
   setup/kit/recomp, setup/kit/tools   this kit's recompiler and tools (tools/setup.py: the importer)
+  setup/toolchain/        the compiler for the recompiled modules (the PC's and Android's): zig, as
+                          the platform's toolchain-<platform>.json pins it (MIT, its licence beside it),
+                          so a player's setup downloads only Sony's firmware
   setup/kit/game/         game.json, the README's source and the code overrides game.json names
   setup/android/<id>.apk  with --apk: the game's APK, which setup.py --android puts on a device
 
@@ -52,7 +55,6 @@ import zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from gameproject import Project, ico_to_png  # noqa: E402
-from toolchain import msi_admin_install  # noqa: E402
 
 KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PYTHON = '3.12.10'
@@ -62,6 +64,15 @@ BIN_FILES = re.compile(r'^(\w[\w-]*\.exe|discord_game_sdk\.dll|lib(ssl|crypto)-\
 BIN_DIRS = ('data', 'shaders-builtin', 'icons')
 # files a release must never contain
 FORBIDDEN = re.compile(r'(?i)(\.(elf|self|suprx|pkg|pup|rif|vpk|bin|psarc|log)$|work\.bin|ssd_aot_|elfdumps|savedata)')
+
+
+def msi_admin_install(msi, target, *options):
+    """Unpack an MSI into target with an administrative install (no elevation); msiexec's exit code.
+    msiexec reads PROPERTY="value" and nothing else: Python's quoting of a list turns a TARGETDIR
+    with a space (a temp folder under a user name with a space) into "TARGETDIR=...", which msiexec
+    rejects with 1639 and its usage window (ss-delta issue #9). Hence a command line written by hand."""
+    cmd = subprocess.list2cmdline(['msiexec.exe', '/a', os.path.abspath(msi), *options]) + f' TARGETDIR="{os.path.abspath(target)}"'
+    return subprocess.run(cmd).returncode
 
 
 # the VC++ runtime ss-delta.exe imports: shipped beside it from the build machine's Visual Studio
@@ -303,6 +314,17 @@ def copy_kit(out, p):
         shutil.copy2(os.path.join(p.root, rel), os.path.join(game, rel))
 
 
+def bundle_toolchain(out, platform):
+    """setup/toolchain: the zig toolchain-<platform>.json pins, unpacked as toolchain.py fetch does (the
+    importer uses it instead of downloading it; its archive stays in the release's downloads)."""
+    import toolchain
+    cache = os.path.join(downloads_dir(out), f'toolchain-{platform}')
+    toolchain.fetch(os.path.join(KIT, 'tools', f'toolchain-{platform}.json'), cache)
+    dest = os.path.join(out, 'setup', 'toolchain')
+    shutil.copytree(os.path.join(cache, 'zig'), os.path.join(dest, 'zig'), symlinks=True)
+    shutil.copy2(os.path.join(cache, 'toolchain.json'), dest)
+
+
 def downloads_dir(out):
     """Where the release's own downloads (Python, wheels) are kept between builds: beside --out."""
     return os.path.join(os.path.dirname(out), 'setup-downloads')
@@ -451,6 +473,7 @@ def build_windows(a, lock, p, out):
         sys.exit(f'refused, {exe} imports DLLs the release does not carry: ' + ', '.join(missing))
     python_windows(lock, out)
     copy_kit(out, p)
+    bundle_toolchain(out, 'windows')
     finish(a, out, 'zip')
 
 
@@ -474,6 +497,7 @@ def build_linux(a, lock, p, out):
         sys.exit(f'refused, {exe} needs libraries a player\'s system may lack: ' + ', '.join(missing))
     python_standalone(lock, out)
     copy_kit(out, p)
+    bundle_toolchain(out, 'linux')
     finish(a, out, 'gztar')
 
 
@@ -507,6 +531,7 @@ def build_macos(a, lock, p, out):
         sys.exit(f'refused, {exe} needs libraries a player\'s Mac may lack: ' + ', '.join(missing))
     python_standalone(lock, out)
     copy_kit(out, p)
+    bundle_toolchain(out, 'macos')
     finish(a, out, 'gztar')
 
 

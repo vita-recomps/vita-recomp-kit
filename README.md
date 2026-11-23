@@ -36,7 +36,7 @@ directories and passes their paths in.
 | `tools/leak-scan.py` | pre-push hook (`install <repo>`) or `check <range>`: blocks game-data files, big files, licence strings, tokens, user folders and the owner's private patterns (`git config leakscan.patterns <file>`, kept outside the repo) from reaching a remote; `git config leakscan.allow <globs>` exempts a clone's deliberate files (e.g. `docs/assets/screenshots/*.jpg`) from the file-type check |
 | `tools/build-vita3k.py` | builds a game project's `third_party/vita3k` with MSVC + Ninja into `build/vita3k` (`msvc.py` finds MSVC with vswhere); `--games-only`: the single-game executables without Vita3K's Qt interface (no Qt needed) |
 | `tools/build-recomp.py` | builds a game project's `generated/<module>/` into `ssd_aot_<module>.dll`: MSVC + CMake + Ninja, or `--toolchain <dir>` without any of them |
-| `tools/toolchain.py`, `tools/toolchain-windows.json`, `tools/toolchain-linux.json`, `tools/toolchain-macos.json` | a compiler for the modules that needs no Visual Studio: llvm-mingw's clang-cl and lld-link with Microsoft's C++ runtime and Windows SDK downloaded from Microsoft's Visual Studio manifest, every file pinned by SHA-256 in the lock file; also the VC++ runtime DLLs a playable folder carries. Linux and macOS: zig |
+| `tools/toolchain.py`, `tools/toolchain-windows.json`, `tools/toolchain-linux.json`, `tools/toolchain-macos.json` | a compiler for the modules that needs no Visual Studio, Xcode or SDK: zig (MIT), pinned by size and SHA-256 in each platform's lock file; it builds Android's modules too |
 | `tools/install-game.py`, `tools/make-dist.py` | from the player's dump (firmware, game, patch, add-ons; pkgs with their licence) to a playable folder `dist/<name>/`, as the game's `game.json` describes it (`gameproject.py`); `--bin`, `--toolchain`, `--out` for a prebuilt front end, the downloaded toolchain and any folder |
 | `tools/fetch-firmware.py` | the PS Vita firmware Vita3K needs (3.74 and the font package) from Sony's update servers, checked by SHA-256 |
 | `tools/offline.py` | the setup's downloads taken from the player's own folders instead (`--offline`), matched by size and SHA-256 whatever their names; run alone, it lists which pinned downloads a folder holds |
@@ -87,33 +87,35 @@ cmake --build <build dir>
 
 ### Without Visual Studio
 
-`tools/toolchain.py` downloads a toolchain for the modules (447 MB, ~930 MB
-unpacked: llvm-mingw's clang 23 as `clang-cl`/`lld-link`/`llvm-lib`, the MSVC
-14.44 runtime libraries and headers, the Windows SDK 10.0.26100 for x64),
-checks every file against `tools/toolchain-windows.json` and unpacks it.
-Microsoft's files come from Microsoft's servers under Microsoft's licence
-(the Visual Studio Build Tools licence, linked in the lock file), which whoever
-runs the tool accepts; nothing of Microsoft's is in this repository.
+`tools/toolchain.py` downloads zig (100 MB on Windows, ~55 MB on Linux and
+macOS), checks it against `tools/toolchain-<platform>.json` and unpacks it.
+zig is a self-contained clang with libc++ and each system's link stubs, under
+MIT and LLVM's Apache licence: nothing to accept, nothing of Microsoft's or
+Apple's downloaded.
 
 ```
-python -I tools/toolchain.py fetch tools/toolchain-windows.json <dir> --accept-microsoft-license
-python -I tools/build-recomp.py --project <game> --toolchain <dir> [--jobs N]   # -> <game>/build/recomp-llvm
-python -I tools/toolchain.py resolve tools/toolchain-windows.json                # maintainers: pin newer releases
+python -I tools/toolchain.py fetch tools/toolchain-windows.json <dir>
+python -I tools/build-recomp.py --project <game> --toolchain <dir> [--jobs N]   # -> <game>/build/recomp-zig
 ```
 
-`build-recomp.py --toolchain` compiles with `recomp/CMakeLists.txt`'s Release
-flags, archives `gen_<module>.lib` and links the DLL, incrementally, with no
-CMake or Ninja. Soul Sacrifice Delta's ten modules build in 3 min with 6 jobs
-(MSVC: ~12 min); they load in the MSVC-built fork, and the differential check
-found no mismatch.
+On Windows the modules are built for `x86_64-windows-gnu` (MinGW-w64's
+headers; the DLLs call Windows' own UCRT) and loaded by the MSVC-built front
+end through `aot_abi.h`'s C interface; the front end's C++ exceptions (the
+escapes) unwind through them on Windows' SEH tables. Soul Sacrifice Delta's
+ten modules build in 10 min with 6 jobs, as with MSVC, and run as the
+MSVC-built ones do (ss-delta `docs/03-plan.md`, installer future-proofing
+E). Until 2026-11 the Windows toolchain was llvm-mingw's clang-cl with
+Microsoft's C++ runtime and Windows SDK, downloaded from Microsoft (447 MB):
+git history has it.
 
 ## A release for players
 
 A player who has a dump of the game, but no Git, Visual Studio or Python,
 gets the game's own folder: one program to start, which builds the game
 the first time. The release holds the game's front end, its files, and in
-`setup/` the importer: Python (with Tk), this kit and the game's
-`game.json`. It holds no game or firmware data.
+`setup/` the importer: Python (with Tk), this kit, the game's `game.json`
+and the compiler (`setup/toolchain`: the zig `toolchain-<platform>.json`
+pins, with its licence). It holds no game or firmware data.
 
 ```
 python -I tools/build-vita3k.py --project <game> --games-only     # -> <game>/build/vita3k-games
@@ -130,12 +132,13 @@ importer, `setup/kit/tools/setup.py`, when the game isn't built yet,
 or when asked (`--install`), and waits for it. With no parts given, the
 importer opens a window (`setupgui.py`). It asks for the dump's parts (the
 game, its update and add-ons, with their licences; `dumpinfo.py` finds
-what a dump already holds) and, on Windows, Microsoft's licence. The
+what a dump already holds). The
 front end's `--dump <file>` instead passes the parts on for the console
 flow. Either way, the importer then:
 
-1. downloads the firmware from Sony (`fetch-firmware.py`) and the toolchain
-   (`toolchain.py`) into `setup/downloads` (`--cache <dir>`: elsewhere, kept);
+1. downloads the firmware from Sony (`fetch-firmware.py`) into
+   `setup/downloads` (`--cache <dir>`: elsewhere, kept), and zig
+   (`toolchain.py`) only when the release doesn't carry it;
    a file found in an `--offline <folder|file>` or the game folder's
    `offline/` (same size and SHA-256, any name: `offline.py`) is taken
    from there instead, so with a folder `--download-only` made the setup
@@ -153,9 +156,9 @@ Offline: `setup.py --download-only <dir> [--for windows,linux,macos,android|all]
 (the front end's `--download-only` passes it on) fetches everything the
 setup would download, for this platform or the ones named, into `<dir>`
 with `offline.json` (file, size, SHA-256, URL), and builds nothing. The
-licences are accepted as for a build (`--accept-microsoft-license`,
-`--accept-android-sdk-license`): the player downloads Sony's, Microsoft's
-and Google's files themselves, and nothing is redistributed. Run again,
+licences are accepted as for a build (`--accept-android-sdk-license` for
+adb): the player downloads Sony's and Google's files themselves, and
+nothing is redistributed. Run again,
 it fetches only what is missing.
 
 The window's Play (or exit code 0) hands back to the front end, which boots

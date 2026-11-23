@@ -8,6 +8,8 @@ Standard library only: android-setup.py (on the device) loads fetch-firmware.py,
 
 usage (a check of a folder, without the setup):
   python -I offline.py <folder|file> ...     which pinned downloads of this kit's lock files are there
+  python -I offline.py --check-urls          does every pinned URL and mirror still answer, at the
+                                             pinned size (HEAD requests; exit code 1 if one fails)
 """
 import glob
 import hashlib
@@ -100,41 +102,79 @@ def provide(dest, size, digest):
     return True
 
 
-def missing(name, size, digest, url, error):
-    """The message when a file is neither offline nor downloadable."""
+def missing(name, size, digest, urls, error):
+    """The message when a file is neither offline nor downloadable (urls: its URL, or the URL and its
+    mirrors)."""
+    urls = [urls] if isinstance(urls, str) else list(urls)
     where = ('it is not in ' + ', '.join(PATHS)) if PATHS else 'no --offline folder was given'
     return (f'{name} could not be downloaded ({error}), and {where}.\n'
-            f'  It is {size:,} bytes, SHA-256 {digest}, from {url}\n'
+            f'  It is {size:,} bytes, SHA-256 {digest}, from {urls[0]}'
+            + ''.join(f'\n  or {u}' for u in urls[1:]) + '\n'
             f'  Without the network: give a folder or file that holds it with --offline (any name).')
 
 
 def pinned():
-    """Every download this kit's lock files and fetch-firmware.py pin: (what, file, size, sha256, url)."""
+    """Every download this kit's lock files and fetch-firmware.py pin:
+    (what, file, size, sha256, url, [mirrors])."""
     tools = os.path.dirname(os.path.abspath(__file__))
     out = []
     import importlib.util
     spec = importlib.util.spec_from_file_location('fetch_firmware', os.path.join(tools, 'fetch-firmware.py'))
     fw = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(fw)
-    out += [('firmware', name, size, digest, url) for name, url, size, digest in fw.FIRMWARE]
+    out += [('firmware', name, size, digest, url, fw.MIRRORS.get(name, [])) for name, url, size, digest in fw.FIRMWARE]
     for lock_path in sorted(glob.glob(os.path.join(tools, 'toolchain-*.json'))):
         with open(lock_path, encoding='utf-8') as f:
             lock = json.load(f)
         what = os.path.basename(lock_path)[:-5]
-        out += [(what, p['file'], p['size'], p['sha256'], p['url']) for p in lock['payloads']]
+        out += [(what, p['file'], p['size'], p['sha256'], p['url'], p.get('mirrors', [])) for p in lock['payloads']]
     with open(os.path.join(tools, 'android-tools.json'), encoding='utf-8') as f:
         lock = json.load(f)
-    out += [(f'adb-{h}', p['file'], p['size'], p['sha256'], p['url']) for h, p in lock['payloads'].items()]
+    out += [(f'adb-{h}', p['file'], p['size'], p['sha256'], p['url'], p.get('mirrors', []))
+            for h, p in lock['payloads'].items()]
     return out
+
+
+def head(url):
+    """(HTTP status or error, Content-Length or None) of a HEAD request, redirects followed."""
+    import urllib.request
+    req = urllib.request.Request(url, method='HEAD', headers={'User-Agent': 'vita-recomp-kit offline.py'})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            n = r.headers.get('Content-Length')
+            return r.status, int(n) if n else None
+    except Exception as e:  # HTTPError, URLError, timeouts: all mean "not there now"
+        return f'{type(e).__name__}: {str(e)[:100]}', None
+
+
+def check_urls():
+    """Every pinned URL and mirror still answers 200 with the pinned size (a HEAD request each): the
+    lines, and the number of failures. A mirror that doesn't say its size counts as answering."""
+    import concurrent.futures
+    urls = [(e, u, n) for e in pinned() for n, u in enumerate([e[4]] + e[5])]
+    with concurrent.futures.ThreadPoolExecutor(8) as pool:
+        results = list(pool.map(lambda t: head(t[1]), urls))
+    lines, failed = [], 0
+    for (e, url, n), (status, size) in zip(urls, results):
+        ok = status == 200 and (size == e[2] or (n and size is None))
+        failed += not ok
+        why = '' if ok else f' ({status}, {size if size is not None else "no"} bytes, pinned {e[2]})'
+        lines.append(f'{"ok  " if ok else "FAIL"} {e[0]} {e[1]} {"mirror " + str(n) if n else "url"}: {url}{why}')
+    return lines, failed
 
 
 def main():
     if len(sys.argv) < 2:
         sys.exit(__doc__)
+    if sys.argv[1] == '--check-urls':
+        lines, failed = check_urls()
+        print('\n'.join(lines))
+        print(f'{failed} of {len(lines)} URLs failed')
+        sys.exit(1 if failed else 0)
     use(sys.argv[1:])
     found = 0
     entries = pinned()
-    for what, name, size, digest, _ in entries:
+    for what, name, size, digest, _, _ in entries:
         path = find(size, digest)
         found += bool(path)
         print(f'{"ok " if path else "-- "} {what:24} {name[:60]:60} {path or ""}')

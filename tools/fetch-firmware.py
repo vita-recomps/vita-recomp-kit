@@ -1,6 +1,7 @@
 """Download the PS Vita firmware Vita3K needs from Sony's own update servers, as Vita3K's guide does:
-the 3.74 system update and the font package. Each file is checked against its SHA-256. Nothing of
-the firmware is in this repository, and nothing downloaded here may be committed.
+the 3.74 system update and the font package, or, when Sony's server fails, the Wayback Machine's
+copies of the same files (MIRRORS). Each file is checked against its SHA-256. Nothing of the firmware
+is in this repository, and nothing downloaded here may be committed.
 
 A copy the player already has is used instead of a download (offline.py): --offline takes a
 folder (searched with its subfolders) or a file, matched by size and SHA-256 whatever its name.
@@ -28,6 +29,15 @@ FIRMWARE = [
      'sd_8b5f60b56c3da8365b973dba570c53a5/PSP2UPDAT.PUP', 56768512,
      'f372d306a7f2711125bea29aa75cbcb1eb19724e9648478fba07b8d655b37344'),
 ]
+# Tried in order when Sony's URL fails: the Wayback Machine's copies of it (the raw bytes: id_), at
+# snapshots checked to be the very file (its SHA-1 in Wayback's index, 2026-11-23; PSP2UPDAT's
+# 2025-07-15 copy downloaded and its SHA-256 checked). Never the newest snapshot by itself: PSP2UPDAT's
+# of 2026-02-27 is another file. The SHA-256 is checked anyway.
+WAYBACK = 'https://web.archive.org/web/{}id_/{}'
+MIRRORS = {
+    'PSVUPDAT.PUP': [WAYBACK.format(t, FIRMWARE[0][1]) for t in ('20250319110354', '20230212113342')],
+    'PSP2UPDAT.PUP': [WAYBACK.format(t, FIRMWARE[1][1]) for t in ('20250715044721', '20220707235317')],
+}
 
 
 def sha256(path):
@@ -66,15 +76,23 @@ def fetch(dest, offline_paths=()):
         path = os.path.join(dest, name)
         have = os.path.exists(path) and os.path.getsize(path) == size and sha256(path) == digest
         if not have and not offline.provide(path, size, digest):
-            print(f'downloading {name} ({size / 2**20:.0f} MB) from Sony', flush=True)
-            try:
-                download(url, path + '.part')
-            except (OSError, ValueError) as e:  # URLError, timeouts, curl.exe's failure
-                sys.exit(offline.missing(name, size, digest, url, e))
-            if sha256(path + '.part') != digest:
+            urls = [url] + MIRRORS.get(name, [])
+            errors = []
+            for n, u in enumerate(urls):
+                print(f'downloading {name} ({size / 2**20:.0f} MB) from '
+                      + ('Sony' if n == 0 else f'a copy of Sony\'s file ({u.split("/")[2]})'), flush=True)
+                try:
+                    download(u, path + '.part')
+                except (OSError, ValueError) as e:  # URLError, timeouts, curl.exe's failure
+                    errors.append(f'{u.split("/")[2]}: {e}')
+                    continue
+                if sha256(path + '.part') == digest:
+                    os.replace(path + '.part', path)
+                    break
                 os.remove(path + '.part')
-                sys.exit(f'{name}: wrong SHA-256 (the download was damaged or Sony changed the file)')
-            os.replace(path + '.part', path)
+                errors.append(f'{u.split("/")[2]}: wrong SHA-256 (damaged, or another file)')
+            else:
+                sys.exit(offline.missing(name, size, digest, urls, '; '.join(errors)))
         paths.append(path)
     return paths
 

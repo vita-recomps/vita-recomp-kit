@@ -2,8 +2,8 @@
 A release is that folder (make-setup.py lays it out): the game's executable (the one thing the
 player starts), its files, and this setup in setup/. The game starts the importer itself when it
 isn't installed yet, or when asked (--install). The importer downloads the PS Vita firmware from Sony
-and a compiler for the recompiled modules (Windows: from LLVM's and Microsoft's servers; Linux and
-macOS: zig, from ziglang.org), installs the game, recompiles its code and compiles it on this
+and uses a compiler for the recompiled modules (zig: the release's own in setup/toolchain, else
+downloaded from ziglang.org), installs the game, recompiles its code and compiles it on this
 computer, then deletes the downloads and its work files: everything stays in the game's folder.
 Nothing of the game is ever uploaded or shared.
 
@@ -11,10 +11,9 @@ usage (no parts: a window asks, setupgui.py; --console: questions in the console
 its own --dump parts on as --install:
   python -I setup/kit/tools/setup.py [--console]
   python -I setup/kit/tools/setup.py [--install <pkg|folder|zip|vpk> [--license <work.bin|rif> | --zrif Z]] ...
-            [--offline PATH ...] [--cache DIR] [--accept-microsoft-license] [--jobs N] [--shortcut] [--steam]
-            [--progress] [--exe FILE]
+            [--offline PATH ...] [--cache DIR] [--jobs N] [--shortcut] [--steam] [--progress] [--exe FILE]
   python -I setup/kit/tools/setup.py --download-only DIR [--for windows,linux,macos,android|all]
-            [--offline PATH ...] [--accept-microsoft-license] [--accept-android-sdk-license]
+            [--offline PATH ...] [--accept-android-sdk-license]
   python -I setup/kit/tools/setup.py --add-to-steam
   python -I setup/kit/tools/setup.py --android [--console] [--push-only] [--accept-android-sdk-license]
             [--serial S | --pair HOST:PORT --code CODE | --connect HOST:PORT] [--apk FILE] [--cache DIR]
@@ -29,13 +28,14 @@ its own --dump parts on as --install:
               taken from first, matched by size and SHA-256 whatever their names (offline.py): a folder
               --download-only made, or the firmware PUPs saved earlier. Repeat for more. The game's
               folder's offline/ is searched unasked. A file found nowhere is downloaded as usual
-  --download-only  everything the setup downloads (the firmware, the compiler; with android, zig for
-              the Android modules and adb), for this computer's platform or --for's, into DIR with a
+  --download-only  everything the setup downloads (the firmware, the compiler unless the release
+              carries it; with android, adb), for this computer's platform or --for's, into DIR with a
               list of it (offline.json); nothing is installed or built. Run again, it fetches only what
               is missing. With that folder the setup needs no network (--offline DIR)
   --cache    keep the downloads in DIR, shared by every game's setup and kept for the next time
               (default: inside setup/, deleted after a successful build)
-  --accept-microsoft-license   Windows only: the compiler's C++ runtime and SDK
+  --accept-microsoft-license   ignored (nothing of Microsoft's is downloaded any more; older launchers
+              still pass it)
   --shortcut  Windows: a shortcut on the desktop. Linux: an entry in the applications menu (which
               Steam's "Add a Non-Steam Game" lists) and on the desktop. macOS: the game's app in
               ~/Applications too (Launchpad and Spotlight list it)
@@ -84,6 +84,7 @@ SETUP = os.path.dirname(os.path.dirname(TOOLS))  # <game folder>/setup
 OUT = os.path.dirname(SETUP)  # the game's folder: the release, built in place
 GAME = os.path.join(SETUP, 'kit', 'game')  # game.json and the game folder's README
 OFFLINE = os.path.join(OUT, 'offline')  # searched for the downloads without --offline (offline.py)
+BUNDLED_TOOLCHAIN = os.path.join(SETUP, 'toolchain')  # zig, when the release carries it (make-setup.py)
 
 
 def game_exe(game):
@@ -535,7 +536,7 @@ def main():
         sys.exit(setupgui.AndroidWindow(game, os.path.abspath(__file__), OUT, exe).run())
     if not parts and not opts.get('--console') and not opts.get('--android'):
         import setupgui
-        w = setupgui.Window(game, os.path.abspath(__file__), OUT, exe, lock.get('microsoft_license'), offline_given)
+        w = setupgui.Window(game, os.path.abspath(__file__), OUT, exe, offline_given)
         sys.exit(w.run())
     if opts.get('--android') and not parts:
         # the game on a device, from what this folder holds: no firmware, no PC compiler, no dump
@@ -592,16 +593,10 @@ def main():
     work = os.path.join(SETUP, 'work')
     jobs = opts.get('--jobs') or str(max(1, min(os.cpu_count() or 4, 6)))
 
-    # nothing to accept on Linux and macOS: zig is MIT, its LLVM parts Apache
-    accepted = bool(opts.get('--accept-microsoft-license')) or 'microsoft_license' not in lock
-    if not accepted:
-        print('\nThe game\'s code is compiled on this PC with LLVM\'s clang and Microsoft\'s C++ runtime and\n'
-              'Windows SDK, downloaded from Microsoft under Microsoft\'s licence (Visual Studio Build Tools):\n'
-              f'  {lock["microsoft_license"]}')
-        if not interactive or ask('Do you accept it? (yes/no)').lower() not in ('y', 'yes'):
-            sys.exit('Not accepted: nothing was downloaded.')
-
-    print(f'\n1/3 firmware (from Sony) and compiler ({lock["download_bytes"] / 2**20:,.0f} MB), into {cache}')
+    # nothing to accept for the compiler: zig is MIT, its LLVM parts Apache
+    bundled = zig_version(BUNDLED_TOOLCHAIN) == lock['zig']  # the release carries the compiler
+    print(f'\n1/3 firmware (from Sony), into {cache}' if bundled else
+          f'\n1/3 firmware (from Sony) and compiler ({lock["download_bytes"] / 2**20:,.0f} MB), into {cache}')
     py = [sys.executable, '-I', '-u']
     if offline_paths:
         print('files found in ' + ', '.join(offline_paths) + ' are used instead of downloads')
@@ -609,16 +604,10 @@ def main():
     if run_logged(py + [os.path.join(TOOLS, 'fetch-firmware.py'), os.path.join(cache, 'firmware')]
                   + [a for p in offline_paths for a in ('--offline', p)]):
         sys.exit('downloading the firmware failed')
-    tc_dir = os.path.join(cache, 'toolchain' if WINDOWS else f'toolchain-{platform}')
-    pinned = [k for k in ('msvc', 'llvm_mingw', 'zig') if k in lock]  # the versions the lock file pins
-    have = {}
-    if os.path.exists(os.path.join(tc_dir, 'toolchain.json')):
-        with open(os.path.join(tc_dir, 'toolchain.json'), encoding='utf-8') as f:
-            have = json.load(f)
-    if any(have.get(k) != lock[k] for k in pinned):
+    if not bundled:
         step(0.10, 'Downloading the compiler')
-        toolchain.fetch(lock_path, tc_dir, True)
-    android_tc = android_toolchain(cache) if opts.get('--android') else ''
+    tc_dir = pc_toolchain(cache, platform)
+    android_tc = tc_dir if opts.get('--android') else ''  # the same zig builds Android's modules
 
     print(f'\n2/3 installing the game, recompiling and compiling its code in {out} (several minutes)')
     firmware = [os.path.join(cache, 'firmware', 'PSVUPDAT.PUP'), os.path.join(cache, 'firmware', 'PSP2UPDAT.PUP')]
@@ -680,8 +669,8 @@ def download_only(dest, opts, platform, offline_paths):
     """--download-only: every file the setup downloads, for this platform or --for's, into dest with
     offline.json; nothing installed or built. dest has the downloads folder's layout, but the setup
     matches the files by size and SHA-256 alone (--offline dest, or dest as the game folder's offline/).
-    The player downloads Sony's, Microsoft's and Google's files themselves, under their licences, as
-    a build would."""
+    The player downloads Sony's and Google's files themselves, under their licences, as a build
+    would."""
     import importlib.util
     targets = [t.strip() for t in (opts.get('--for') or platform).lower().split(',') if t.strip()]
     if 'all' in targets:
@@ -698,21 +687,18 @@ def download_only(dest, opts, platform, offline_paths):
 
     # (folder in dest, as setup.py's downloads lay it out; payload: file, url, size, sha256; what)
     items = []
-    for h in hosts:
+    for h in hosts:  # the PC's zig builds Android's modules too
         lock = lock_of(f'toolchain-{h}.json')
-        folder = os.path.join('toolchain' if h == 'windows' else f'toolchain-{h}', 'downloads')
+        if h == platform and zig_version(BUNDLED_TOOLCHAIN) == lock['zig']:
+            print(f'the compiler for {h}: this release carries it ({BUNDLED_TOOLCHAIN})')
+            continue
+        folder = os.path.join(toolchain_folder(h), 'downloads')
         items += [(folder, p, f'compiler for {h}') for p in lock['payloads']]
     if 'android' in targets:
-        if 'windows' in hosts:
-            items += [(os.path.join('toolchain-android', 'downloads'), p, 'zig for Android, from Windows')
-                      for p in lock_of('toolchain-android-windows.json')['payloads']]
         adb = lock_of('android-tools.json')
         items += [('downloads', adb['payloads'][h], f'adb for {h}') for h in hosts]
 
     licences = []
-    if 'windows' in hosts and not opts.get('--accept-microsoft-license'):
-        licences.append(('--accept-microsoft-license', 'Microsoft\'s C++ runtime and Windows SDK (Visual Studio '
-                         'Build Tools licence)', lock_of('toolchain-windows.json')['microsoft_license']))
     if 'android' in targets and not opts.get('--accept-android-sdk-license'):
         licences.append(('--accept-android-sdk-license', 'Google\'s Android SDK Platform-Tools (adb), the Android '
                          'SDK License Agreement', lock_of('android-tools.json')['license_url']))
@@ -745,7 +731,7 @@ def download_only(dest, opts, platform, offline_paths):
                'url': p['url'], 'what': what} for folder, p, what in items]
     manifest = {'schema': 'vita-recomp-kit.offline.v1', 'made': time.strftime('%Y-%m-%d'), 'for': targets,
                 'note': 'Files the vita-recomp-kit setup downloads, for setup.py --offline (or a game folder\'s '
-                        'offline/). Matched by size and SHA-256. Sony\'s, Microsoft\'s and Google\'s files are '
+                        'offline/). Matched by size and SHA-256. Sony\'s and Google\'s files are '
                         'under their own licences: keep them for yourself, don\'t share them.',
                 'files': files}
     with open(os.path.join(dest, 'offline.json'), 'w', encoding='utf-8', newline='\n') as f:
@@ -754,23 +740,33 @@ def download_only(dest, opts, platform, offline_paths):
           f'or pass --offline "{dest}" (the game\'s executable takes it too).')
 
 
-def android_toolchain(cache):
-    """zig for the Android modules: Windows' own lock file (the PC compiler there is clang-cl), the
-    PC's zig on Linux and macOS; fetched into the downloads when not there yet."""
-    if WINDOWS:
-        lock_path, dest = os.path.join(TOOLS, 'toolchain-android-windows.json'), os.path.join(cache, 'toolchain-android')
-    else:
-        lock_path = os.path.join(TOOLS, f'toolchain-{"macos" if MACOS else "linux"}.json')
-        dest = os.path.join(cache, f'toolchain-{"macos" if MACOS else "linux"}')
+def toolchain_folder(platform):
+    """The compiler's folder in the downloads (its archive in <folder>/downloads)."""
+    return 'toolchain' if platform == 'windows' else f'toolchain-{platform}'
+
+
+def zig_version(folder):
+    """The zig version toolchain.json in folder names, when its zig is there; None otherwise."""
+    try:
+        with open(os.path.join(folder, 'toolchain.json'), encoding='utf-8') as f:
+            have = json.load(f).get('zig')
+    except (OSError, ValueError):
+        return None
+    return have if toolchain.zig_executable(folder) else None
+
+
+def pc_toolchain(cache, platform):
+    """zig for this computer's modules and for Android's: the release's own (setup/toolchain,
+    make-setup.py), else fetched into the downloads when not there yet (or another version is)."""
+    lock_path = os.path.join(TOOLS, f'toolchain-{platform}.json')
     with open(lock_path, encoding='utf-8') as f:
         lock = json.load(f)
-    have = {}
-    if os.path.exists(os.path.join(dest, 'toolchain.json')):
-        with open(os.path.join(dest, 'toolchain.json'), encoding='utf-8') as f:
-            have = json.load(f)
-    if have.get('zig') != lock['zig']:
-        print(f'downloading zig {lock["zig"]} for the Android modules ({lock["download_bytes"] / 2**20:,.0f} MB)')
-        toolchain.fetch(lock_path, dest, True)
+    if zig_version(BUNDLED_TOOLCHAIN) == lock['zig']:
+        return BUNDLED_TOOLCHAIN
+    dest = os.path.join(cache, toolchain_folder(platform))
+    if zig_version(dest) != lock['zig']:
+        print(f'downloading zig {lock["zig"]} ({lock["download_bytes"] / 2**20:,.0f} MB)')
+        toolchain.fetch(lock_path, dest)
     return dest
 
 
@@ -809,7 +805,7 @@ def android(game, opts, exe, platform, interactive, built=False):
             sys.exit('The game isn\'t built on this computer yet: start it once and build it from your dump '
                      '(or run the setup with --install <dump> --android)')
         print(f'\nandroid 1/3 the modules for Android, from the game in {OUT} (several minutes)')
-        tc = android_toolchain(cache)
+        tc = pc_toolchain(cache, platform)
         jobs = opts.get('--jobs') or str(max(1, min(os.cpu_count() or 4, 6)))
         cmd = py + [os.path.join(TOOLS, 'install-game.py'), '--project', GAME, '--bin', OUT, '--exe', exe,
                     '--work', work, '--out', OUT, '--jobs', jobs, '--android', tc, '--android-only']

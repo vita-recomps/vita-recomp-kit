@@ -8,13 +8,14 @@ usage:
   --modules    default: every folder in generated/ that has a funcs.h
   --jobs       parallel compiles of generated code (default 4; memory, not cores, is the usual
                limit: the largest buckets take ~0.5 GB each)
-  --toolchain  build with the clang-cl toolchain toolchain.py unpacked into DIR, without Visual Studio,
-               CMake or Ninja, into build/recomp-llvm; otherwise MSVC, CMake and Ninja, into build/recomp
+  --toolchain  build with the zig toolchain.py unpacked into DIR (toolchain.py fetch
+               toolchain-<platform>.json DIR), without Visual Studio, CMake or Ninja, into build/recomp-zig;
+               otherwise MSVC, CMake and Ninja, into build/recomp
   --bisect     a RECOMP_BISECT build (every direct call goes through the host, so SSD_AOT_RANGE can
                bisect down to one function and SSD_AOT_DIFF can check every call), into
-               build/recomp-llvm-bisect or build/recomp-bisect
-  --android    the modules for Android arm64 (.so), with the zig in --toolchain DIR (on Windows:
-               toolchain.py fetch toolchain-android-windows.json DIR), into build/recomp-android-zig
+               build/recomp-zig-bisect or build/recomp-bisect
+  --android    the modules for Android arm64 (.so), with the zig in --toolchain DIR, into
+               build/recomp-android-zig
 """
 import argparse
 import glob
@@ -65,7 +66,7 @@ def main():
     print(f'building {", ".join(modules)} ({a.jobs} jobs)')
     start = time.time()
     if a.toolchain:
-        name = 'recomp-android-zig' if a.android else 'recomp-llvm'
+        name = 'recomp-android-zig' if a.android else 'recomp-zig'
         build = os.path.join(root, 'build', name + ('-bisect' if a.bisect else ''))
         toolchain.build_modules(gen, modules, build, a.toolchain, a.jobs, ('RECOMP_BISECT',) if a.bisect else (),
                                 android=a.android)

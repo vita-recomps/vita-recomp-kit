@@ -12,7 +12,7 @@ usage:
                     is --out itself (a release folder building in place), the front end's files are
                     left as they are (Windows can't replace a running exe or its loaded DLLs)
   --exe             the front end's executable when it isn't <bin>/<id><suffix> (a macOS app bundle)
-  --redist          copy the VC++ runtime DLLs from DIR (toolchain.py's redist/) into the folder, so
+  --redist          copy the VC++ runtime DLLs from DIR (msvcp140*, vcruntime140*) into the folder, so
                     the player needs no VC++ redistributable installed
   --vita-fs         set [paths] vita_fs in the ini (default: the fs folder next to the exe)
   --recompiled-dir  where <prefix><module>.dll are (default build/recomp)

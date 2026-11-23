@@ -8,7 +8,11 @@
    "file": "zig-aarch64-macos-0.17.1.tar.xz",
    "url": "https://ziglang.org/download/0.17.1/zig-aarch64-macos-0.17.1.tar.xz",
    "sha256": "75f1bc7a1e9852f17ec9a0c1895f767c4ec56d46bc8a834920eece1d0359dd8d",
-   "size": 54001240
+   "size": 54001240,
+   "mirrors": [
+    "https://web.archive.org/web/20261104133723id_/https://ziglang.org/download/0.17.1/zig-aarch64-macos-0.17.1.tar.xz",
+    "https://web.archive.org/web/20261107034429id_/https://ziglang.org/download/0.17.1/zig-aarch64-macos-0.17.1.tar.xz"
+   ]
   }
  ]
 }

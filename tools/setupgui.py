@@ -1,5 +1,4 @@
-"""The setup's windows (Tk). Window asks for the dump's parts, the playable folder and (Windows)
-Microsoft's licence, then runs setup.py with them in a hidden console and shows its progress.
+"""The setup's windows (Tk). Window asks for the dump's parts and the playable folder, then runs setup.py with them in a hidden console and shows its progress.
 AndroidWindow (setup.py --android) asks how the Android device is connected and runs setup.py
 --android --console the same way. setup.py stays the one place that does the work, so the windows and
 the command line do the same thing.
@@ -123,10 +122,9 @@ class Part:
 
 
 class Window:
-    def __init__(self, game, setup_py, out, exe, licence_url, offline_paths=()):
+    def __init__(self, game, setup_py, out, exe, offline_paths=()):
         """out: the game's folder, where it is built; exe: the game's executable (which started this
-        window and waits for it); licence_url: Microsoft's licence the Windows compiler needs accepted,
-        None when there is none; offline_paths: setup.py's --offline, the folder row's first value."""
+        window and waits for it); offline_paths: setup.py's --offline, the folder row's first value."""
         self.game = game
         self.exe = exe
         self.setup_py = setup_py
@@ -138,7 +136,6 @@ class Window:
         self.out = out
         self.built = False
         self.result = 1  # setup.py's exit code: 1 cancelled, 0 Play, 2 built but closed
-        self.accepted = tk.BooleanVar(value=licence_url is None)
         self.shortcut = tk.BooleanVar(value=True)
         self.steam = tk.BooleanVar(value=True)  # Linux: setup.py --steam
         self.stage = tk.StringVar(value='')
@@ -193,14 +190,6 @@ class Window:
         ttk.Label(f, foreground='gray', wraplength=720, justify='left',
                   text=f'The game\'s folder: {out}').grid(sticky='w', pady=(10, 0))
 
-        if licence_url:
-            lic = ttk.Frame(f)
-            lic.grid(sticky='w', pady=(10, 0))
-            ttk.Checkbutton(lic, variable=self.accepted, text='I accept Microsoft\'s licence for the C++ runtime '
-                            'and Windows SDK the compiler uses').grid(row=0, column=0)
-            link = ttk.Label(lic, text='(read it)', foreground='blue', cursor='hand2')
-            link.grid(row=0, column=1, padx=4)
-            link.bind('<Button-1>', lambda e: webbrowser.open(licence_url))
         shortcut = ('Put a shortcut to the game on the desktop' if WINDOWS else
                     'Put the game in Applications too (Launchpad and Spotlight list it)' if MACOS else
                     'Add the game to the applications menu and the desktop (Steam\'s "Add a Non-Steam Game" '
@@ -333,9 +322,6 @@ class Window:
             if path and not os.path.exists(path):
                 messagebox.showerror('Setup', f'{path} does not exist.')
                 return
-        if not self.accepted.get():
-            messagebox.showerror('Setup', 'The compiler needs Microsoft\'s licence accepted.')
-            return
         # only the update, not the game: the install would fail after the downloads (an update alone
         # is fine over a built game)
         missing = None if built else dumpinfo.missing_game(
@@ -358,8 +344,6 @@ class Window:
         # programs share; Linux and macOS: the same interpreter
         python = os.path.join(os.path.dirname(sys.executable), 'python.exe') if WINDOWS else sys.executable
         cmd = [python, '-I', '-u', self.setup_py, *args, '--exe', self.exe, *self.extra_args]
-        if WINDOWS:
-            cmd.append('--accept-microsoft-license')
         if self.shortcut.get():
             cmd.append('--shortcut')
         if not WINDOWS and not MACOS and self.steam.get():
