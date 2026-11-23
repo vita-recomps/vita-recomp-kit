@@ -39,6 +39,7 @@ directories and passes their paths in.
 | `tools/toolchain.py`, `tools/toolchain-windows.json`, `tools/toolchain-linux.json`, `tools/toolchain-macos.json` | a compiler for the modules that needs no Visual Studio: llvm-mingw's clang-cl and lld-link with Microsoft's C++ runtime and Windows SDK downloaded from Microsoft's Visual Studio manifest, every file pinned by SHA-256 in the lock file; also the VC++ runtime DLLs a playable folder carries. Linux and macOS: zig |
 | `tools/install-game.py`, `tools/make-dist.py` | from the player's dump (firmware, game, patch, add-ons; pkgs with their licence) to a playable folder `dist/<name>/`, as the game's `game.json` describes it (`gameproject.py`); `--bin`, `--toolchain`, `--out` for a prebuilt front end, the downloaded toolchain and any folder |
 | `tools/fetch-firmware.py` | the PS Vita firmware Vita3K needs (3.74 and the font package) from Sony's update servers, checked by SHA-256 |
+| `tools/offline.py` | the setup's downloads taken from the player's own folders instead (`--offline`), matched by size and SHA-256 whatever their names; run alone, it lists which pinned downloads a folder holds |
 | `tools/make-setup.py`, `tools/setup-windows.json`, `tools/setup-linux.json`, `tools/setup-macos.json`, `tools/setup.py`, `tools/setupgui.py`, `tools/dumpinfo.py` | a game's release for players: the game's own folder with its front end and, in `setup/`, the importer: Python (Windows: the embeddable distribution; Linux and macOS: python-build-standalone) with capstone and PyYAML (pinned) and the kit; `setup.py` runs on the player's computer, started by the game (see below) |
 
 ## Tools
@@ -135,6 +136,10 @@ flow. Either way, the importer then:
 
 1. downloads the firmware from Sony (`fetch-firmware.py`) and the toolchain
    (`toolchain.py`) into `setup/downloads` (`--cache <dir>`: elsewhere, kept);
+   a file found in an `--offline <folder|file>` or the game folder's
+   `offline/` (same size and SHA-256, any name: `offline.py`) is taken
+   from there instead, so with a folder `--download-only` made the setup
+   needs no network;
 2. installs the game, runs it once (hidden and silent: the front end's
    `--dump-elfs`) to write the modules as loaded,
    recompiles them and compiles them with the toolchain, in the game's own
@@ -143,6 +148,15 @@ flow. Either way, the importer then:
 3. deletes its downloads (unless `--cache`), its work files
    (`setup/work`) and the modules as loaded; if asked, it adds a desktop
    shortcut, a menu entry, a Steam entry or a copy in `~/Applications`.
+
+Offline: `setup.py --download-only <dir> [--for windows,linux,macos,android|all]`
+(the front end's `--download-only` passes it on) fetches everything the
+setup would download, for this platform or the ones named, into `<dir>`
+with `offline.json` (file, size, SHA-256, URL), and builds nothing. The
+licences are accepted as for a build (`--accept-microsoft-license`,
+`--accept-android-sdk-license`): the player downloads Sony's, Microsoft's
+and Google's files themselves, and nothing is redistributed. Run again,
+it fetches only what is missing.
 
 The window's Play (or exit code 0) hands back to the front end, which boots
 the game in the same process. Everything stays in the game's folder: the

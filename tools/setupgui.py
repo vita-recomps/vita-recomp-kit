@@ -123,10 +123,10 @@ class Part:
 
 
 class Window:
-    def __init__(self, game, setup_py, out, exe, licence_url):
+    def __init__(self, game, setup_py, out, exe, licence_url, offline_paths=()):
         """out: the game's folder, where it is built; exe: the game's executable (which started this
         window and waits for it); licence_url: Microsoft's licence the Windows compiler needs accepted,
-        None when there is none."""
+        None when there is none; offline_paths: setup.py's --offline, the folder row's first value."""
         self.game = game
         self.exe = exe
         self.setup_py = setup_py
@@ -173,6 +173,22 @@ class Window:
         self.dump_note.grid(row=101, column=1, sticky='w')
         self.check_pending = None
         self.parts[0].path.trace_add('write', self.watch_dump)
+
+        # files the downloads are taken from (setup.py --offline): a folder --download-only made, the PUPs
+        files = ttk.LabelFrame(f, text='Downloaded files (optional): a folder that already holds them', padding=8)
+        files.grid(sticky='ew', pady=(10, 0))
+        files.columnconfigure(0, weight=1)
+        self.offline = tk.StringVar(value=offline_paths[0] if offline_paths else '')
+        self.offline_more = list(offline_paths[1:])
+        ttk.Entry(files, textvariable=self.offline).grid(row=0, column=0, sticky='ew')
+        ttk.Button(files, text='Folder...', command=self.pick_offline).grid(row=0, column=1, padx=(6, 0))
+        own = os.path.join(out, 'offline')
+        ttk.Label(files, foreground='gray', wraplength=700, justify='left', text=(
+            'Files found there (the firmware PUPs, the compiler, under any name) aren\'t downloaded again: with '
+            'a folder made by the setup\'s --download-only, no network is needed. '
+            + (f'{own} is used too.' if os.path.isdir(own) else
+               'A folder named offline in the game\'s folder is used without being chosen.'))).grid(
+            row=1, column=0, columnspan=2, sticky='w')
 
         ttk.Label(f, foreground='gray', wraplength=720, justify='left',
                   text=f'The game\'s folder: {out}').grid(sticky='w', pady=(10, 0))
@@ -279,6 +295,11 @@ class Window:
                 text += ' Add the game\'s licence (work.bin, .rif or zRIF).'
             self.dump_note['text'] = text
 
+    def pick_offline(self):
+        d = filedialog.askdirectory()
+        if d:
+            self.offline.set(os.path.normpath(d))
+
     def add_addon(self):
         part = Part(self.addon_frame, self.addon_row, f'Add-on {len(self.addons) + 1}', False)
         self.addons.append(part)
@@ -328,6 +349,11 @@ class Window:
                                         'game\'s rows empty.)'):
             return
         args = [a for p in parts for a in p.args()]
+        folder = self.offline.get().strip().strip('"')
+        if folder and not os.path.exists(folder):
+            messagebox.showerror('Setup', f'{folder} does not exist.')
+            return
+        args += [a for d in ([folder] if folder else []) + self.offline_more for a in ('--offline', d)]
         # Windows: python.exe beside the pythonw.exe that runs the window, for a console the setup's
         # programs share; Linux and macOS: the same interpreter
         python = os.path.join(os.path.dirname(sys.executable), 'python.exe') if WINDOWS else sys.executable

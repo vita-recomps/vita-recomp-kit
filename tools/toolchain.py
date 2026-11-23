@@ -30,6 +30,9 @@ brings the little a module needs from the C++ runtime (ss-delta docs/09-android.
 """
 import concurrent.futures, glob, hashlib, json, os, re, shutil, subprocess, sys, tarfile, tempfile, urllib.error, urllib.request, zipfile
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import offline  # noqa: E402
+
 MACOS = sys.platform == 'darwin'
 
 CHANNEL = 'https://aka.ms/vs/17/release/channel'
@@ -148,11 +151,19 @@ def resolve(lock_path):
     sdk_id = sorted((p['id'] for p in packages if re.match(r'Win11SDK_10\.0\.\d+$', p['id'])),
                     key=lambda s: int(s.rsplit('.', 1)[1]))[-1]
     payloads = []
-    for name in CRT_PACKAGES:
-        for pl in by_id[f'Microsoft.VC.{msvc}.{name}']['payloads']:
-            payloads.append({'kind': 'vsix', 'file': pl['fileName'], 'url': pl['url'], 'sha256': pl['sha256'].lower(), 'size': pl['size']})
     sdk = {pl['fileName'].replace('\\', '/').split('/')[-1]: pl for pl in by_id[sdk_id]['payloads']}
     with tempfile.TemporaryDirectory() as tmp:
+        # the manifest's size of a VSIX is not its file's (CRT.Headers 14.44.17.14: 2,128,977 listed,
+        # 2,116,223 served, the SHA-256 the manifest's): the size from the file, or no check by size
+        # (offline.py, download()) would ever keep one
+        for name in CRT_PACKAGES:
+            for pl in by_id[f'Microsoft.VC.{msvc}.{name}']['payloads']:
+                local = os.path.join(tmp, 'x.vsix')
+                get(pl['url'], local)
+                if sha256(local) != pl['sha256'].lower():
+                    sys.exit(f'{pl["fileName"]}: not the SHA-256 Microsoft\'s manifest gives')
+                payloads.append({'kind': 'vsix', 'file': pl['fileName'], 'url': pl['url'],
+                                 'sha256': pl['sha256'].lower(), 'size': os.path.getsize(local)})
         for msi in SDK_MSIS:
             pl = sdk[msi]
             payloads.append({'kind': 'msi', 'file': msi, 'url': pl['url'], 'sha256': pl['sha256'].lower(), 'size': pl['size']})
@@ -186,6 +197,21 @@ def resolve(lock_path):
           f'{len(payloads)} files, {lock["download_bytes"] / 2**20:,.0f} MB')
 
 
+def obtain(p, local):
+    """One pinned payload ({file, url, size, sha256}) at local: kept if already there, else from the
+    offline folders (setup.py --offline), else downloaded; exits naming the file when neither works."""
+    if os.path.exists(local) and os.path.getsize(local) == p['size'] and sha256(local) == p['sha256']:
+        return
+    if offline.provide(local, p['size'], p['sha256']):
+        return
+    try:
+        get(p['url'], local)
+    except (OSError, ValueError, subprocess.CalledProcessError) as e:  # URLError, timeouts, curl.exe
+        if os.path.exists(local):
+            os.remove(local)
+        sys.exit(offline.missing(p['file'], p['size'], p['sha256'], p['url'], e))
+
+
 def download(lock, cache):
     """Every payload of a lock file into cache/, checked against its SHA-256 (kept if already there)."""
     os.makedirs(cache, exist_ok=True)
@@ -194,7 +220,7 @@ def download(lock, cache):
     for p in lock['payloads']:
         local = os.path.join(cache, p['file'])
         if not (os.path.exists(local) and os.path.getsize(local) == p['size'] and sha256(local) == p['sha256']):
-            get(p['url'], local)
+            obtain(p, local)
             if sha256(local) != p['sha256']:
                 os.remove(local)
                 sys.exit(f'{p["file"]}: wrong SHA-256 (the download changed or was damaged)')

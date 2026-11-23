@@ -11,7 +11,10 @@ usage (no parts: a window asks, setupgui.py; --console: questions in the console
 its own --dump parts on as --install:
   python -I setup/kit/tools/setup.py [--console]
   python -I setup/kit/tools/setup.py [--install <pkg|folder|zip|vpk> [--license <work.bin|rif> | --zrif Z]] ...
-            [--cache DIR] [--accept-microsoft-license] [--jobs N] [--shortcut] [--steam] [--progress] [--exe FILE]
+            [--offline PATH ...] [--cache DIR] [--accept-microsoft-license] [--jobs N] [--shortcut] [--steam]
+            [--progress] [--exe FILE]
+  python -I setup/kit/tools/setup.py --download-only DIR [--for windows,linux,macos,android|all]
+            [--offline PATH ...] [--accept-microsoft-license] [--accept-android-sdk-license]
   python -I setup/kit/tools/setup.py --add-to-steam
   python -I setup/kit/tools/setup.py --android [--console] [--push-only] [--accept-android-sdk-license]
             [--serial S | --pair HOST:PORT --code CODE | --connect HOST:PORT] [--apk FILE] [--cache DIR]
@@ -22,6 +25,14 @@ its own --dump parts on as --install:
               When the game is built here by this release and the parts add only add-ons and mods
               (the game's own parts already installed, or left out), only those are installed: no
               download, no build
+  --offline  a folder (searched with its subfolders, four levels deep) or a file the downloads are
+              taken from first, matched by size and SHA-256 whatever their names (offline.py): a folder
+              --download-only made, or the firmware PUPs saved earlier. Repeat for more. The game's
+              folder's offline/ is searched unasked. A file found nowhere is downloaded as usual
+  --download-only  everything the setup downloads (the firmware, the compiler; with android, zig for
+              the Android modules and adb), for this computer's platform or --for's, into DIR with a
+              list of it (offline.json); nothing is installed or built. Run again, it fetches only what
+              is missing. With that folder the setup needs no network (--offline DIR)
   --cache    keep the downloads in DIR, shared by every game's setup and kept for the next time
               (default: inside setup/, deleted after a successful build)
   --accept-microsoft-license   Windows only: the compiler's C++ runtime and SDK
@@ -62,6 +73,7 @@ import urllib.parse
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, TOOLS)
 import dumpinfo  # noqa: E402
+import offline  # noqa: E402
 import toolchain  # noqa: E402
 from gameproject import EXE_SUFFIX, MACOS, WINDOWS  # noqa: E402
 
@@ -71,6 +83,7 @@ MACOS_MINIMUM = '13.3'
 SETUP = os.path.dirname(os.path.dirname(TOOLS))  # <game folder>/setup
 OUT = os.path.dirname(SETUP)  # the game's folder: the release, built in place
 GAME = os.path.join(SETUP, 'kit', 'game')  # game.json and the game folder's README
+OFFLINE = os.path.join(OUT, 'offline')  # searched for the downloads without --offline (offline.py)
 
 
 def game_exe(game):
@@ -479,10 +492,13 @@ def main():
     lock_path = os.path.join(TOOLS, f'toolchain-{platform}.json')
     with open(lock_path, encoding='utf-8') as f:
         lock = json.load(f)
-    parts, rest, i = [], [], 0
+    parts, rest, offline_given, i = [], [], [], 0
     while i < len(argv):
         if argv[i] in ('--install', '--license', '--zrif') and i + 1 < len(argv):
             parts += [argv[i], argv[i + 1]]
+            i += 2
+        elif argv[i] == '--offline' and i + 1 < len(argv):
+            offline_given.append(os.path.abspath(argv[i + 1]))
             i += 2
         else:
             rest.append(argv[i])
@@ -490,8 +506,8 @@ def main():
     opts = {}
     j = 0
     while j < len(rest):
-        if rest[j] in ('--cache', '--jobs', '--exe', '--serial', '--pair', '--code', '--connect', '--apk') \
-                and j + 1 < len(rest):
+        if rest[j] in ('--cache', '--jobs', '--exe', '--serial', '--pair', '--code', '--connect', '--apk',
+                       '--download-only', '--for') and j + 1 < len(rest):
             opts[rest[j]] = rest[j + 1]
             j += 2
         elif rest[j] in ('--accept-microsoft-license', '--shortcut', '--steam', '--add-to-steam', '--console',
@@ -501,7 +517,12 @@ def main():
         else:
             sys.exit(__doc__)
     exe = os.path.abspath(opts['--exe']) if opts.get('--exe') else game_exe(game)
+    # files the downloads are taken from first: --offline, and the game folder's offline/ unasked
+    offline_paths = offline_given + ([OFFLINE] if os.path.isdir(OFFLINE) and OFFLINE not in offline_given else [])
+    offline.use(offline_paths)
 
+    if opts.get('--download-only'):
+        return download_only(os.path.abspath(opts['--download-only']), opts, platform, offline_paths)
     if opts.get('--add-to-steam'):
         if WINDOWS or MACOS:
             sys.exit('--add-to-steam: Linux (and the Steam Deck) only for now; add the game to Steam with '
@@ -514,7 +535,8 @@ def main():
         sys.exit(setupgui.AndroidWindow(game, os.path.abspath(__file__), OUT, exe).run())
     if not parts and not opts.get('--console') and not opts.get('--android'):
         import setupgui
-        sys.exit(setupgui.Window(game, os.path.abspath(__file__), OUT, exe, lock.get('microsoft_license')).run())
+        w = setupgui.Window(game, os.path.abspath(__file__), OUT, exe, lock.get('microsoft_license'), offline_given)
+        sys.exit(w.run())
     if opts.get('--android') and not parts:
         # the game on a device, from what this folder holds: no firmware, no PC compiler, no dump
         return android(game, opts, exe, platform, interactive=bool(opts.get('--console')))
@@ -581,8 +603,11 @@ def main():
 
     print(f'\n1/3 firmware (from Sony) and compiler ({lock["download_bytes"] / 2**20:,.0f} MB), into {cache}')
     py = [sys.executable, '-I', '-u']
+    if offline_paths:
+        print('files found in ' + ', '.join(offline_paths) + ' are used instead of downloads')
     step(0.02, 'Downloading the PS Vita firmware from Sony')
-    if run_logged(py + [os.path.join(TOOLS, 'fetch-firmware.py'), os.path.join(cache, 'firmware')]):
+    if run_logged(py + [os.path.join(TOOLS, 'fetch-firmware.py'), os.path.join(cache, 'firmware')]
+                  + [a for p in offline_paths for a in ('--offline', p)]):
         sys.exit('downloading the firmware failed')
     tc_dir = os.path.join(cache, 'toolchain' if WINDOWS else f'toolchain-{platform}')
     pinned = [k for k in ('msvc', 'llvm_mingw', 'zig') if k in lock]  # the versions the lock file pins
@@ -646,6 +671,87 @@ def main():
     step(1.0, 'Done')
     if opts.get('--android'):
         android(game, opts, exe, platform, interactive, built=True)
+
+
+PLATFORMS = ('windows', 'linux', 'macos', 'android')
+
+
+def download_only(dest, opts, platform, offline_paths):
+    """--download-only: every file the setup downloads, for this platform or --for's, into dest with
+    offline.json; nothing installed or built. dest has the downloads folder's layout, but the setup
+    matches the files by size and SHA-256 alone (--offline dest, or dest as the game folder's offline/).
+    The player downloads Sony's, Microsoft's and Google's files themselves, under their licences, as
+    a build would."""
+    import importlib.util
+    targets = [t.strip() for t in (opts.get('--for') or platform).lower().split(',') if t.strip()]
+    if 'all' in targets:
+        targets = list(PLATFORMS)
+    bad = [t for t in targets if t not in PLATFORMS]
+    if bad:
+        sys.exit(f'--for: {", ".join(bad)}? (windows, linux, macos, android, all; comma-separated)')
+    # the computers the setup runs on; android: for Android from those (this one when none is named)
+    hosts = [t for t in PLATFORMS[:3] if t in targets] or [platform]
+
+    def lock_of(name):
+        with open(os.path.join(TOOLS, name), encoding='utf-8') as f:
+            return json.load(f)
+
+    # (folder in dest, as setup.py's downloads lay it out; payload: file, url, size, sha256; what)
+    items = []
+    for h in hosts:
+        lock = lock_of(f'toolchain-{h}.json')
+        folder = os.path.join('toolchain' if h == 'windows' else f'toolchain-{h}', 'downloads')
+        items += [(folder, p, f'compiler for {h}') for p in lock['payloads']]
+    if 'android' in targets:
+        if 'windows' in hosts:
+            items += [(os.path.join('toolchain-android', 'downloads'), p, 'zig for Android, from Windows')
+                      for p in lock_of('toolchain-android-windows.json')['payloads']]
+        adb = lock_of('android-tools.json')
+        items += [('downloads', adb['payloads'][h], f'adb for {h}') for h in hosts]
+
+    licences = []
+    if 'windows' in hosts and not opts.get('--accept-microsoft-license'):
+        licences.append(('--accept-microsoft-license', 'Microsoft\'s C++ runtime and Windows SDK (Visual Studio '
+                         'Build Tools licence)', lock_of('toolchain-windows.json')['microsoft_license']))
+    if 'android' in targets and not opts.get('--accept-android-sdk-license'):
+        licences.append(('--accept-android-sdk-license', 'Google\'s Android SDK Platform-Tools (adb), the Android '
+                         'SDK License Agreement', lock_of('android-tools.json')['license_url']))
+    for flag, what, url in licences:
+        print(f'\nThis downloads {what}:\n  {url}')
+        if not (sys.stdin and sys.stdin.isatty()) or ask('Do you accept it? (yes/no)').lower() not in ('y', 'yes'):
+            sys.exit(f'Not accepted: nothing was downloaded (or pass {flag}).')
+
+    spec = importlib.util.spec_from_file_location('fetch_firmware', os.path.join(TOOLS, 'fetch-firmware.py'))
+    fw = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fw)
+    total = sum(s for _, _, s, _ in fw.FIRMWARE) + sum(p['size'] for _, p, _ in items)
+    print(f'{len(fw.FIRMWARE) + len(items)} files ({total / 2**20:,.0f} MB) for {", ".join(targets)} into {dest}')
+    print('\nthe PS Vita firmware (from Sony)')
+    fw.fetch(os.path.join(dest, 'firmware'), offline_paths)
+    done = 0
+    for folder, p, what in items:
+        local = os.path.join(dest, folder, p['file'])
+        os.makedirs(os.path.dirname(local), exist_ok=True)
+        toolchain.obtain(p, local)
+        if toolchain.sha256(local) != p['sha256']:
+            os.remove(local)
+            sys.exit(f'{p["file"]}: wrong SHA-256 (the download changed or was damaged)')
+        done += 1
+        print(f'  {done}/{len(items)}  {p["size"] / 2**20:7,.1f} MB  {what}: {p["file"]}', flush=True)
+
+    files = [{'path': f'firmware/{name}', 'size': size, 'sha256': digest, 'url': url, 'what': 'PS Vita firmware'}
+             for name, url, size, digest in fw.FIRMWARE]
+    files += [{'path': f'{folder}/{p["file"]}'.replace(os.sep, '/'), 'size': p['size'], 'sha256': p['sha256'],
+               'url': p['url'], 'what': what} for folder, p, what in items]
+    manifest = {'schema': 'vita-recomp-kit.offline.v1', 'made': time.strftime('%Y-%m-%d'), 'for': targets,
+                'note': 'Files the vita-recomp-kit setup downloads, for setup.py --offline (or a game folder\'s '
+                        'offline/). Matched by size and SHA-256. Sony\'s, Microsoft\'s and Google\'s files are '
+                        'under their own licences: keep them for yourself, don\'t share them.',
+                'files': files}
+    with open(os.path.join(dest, 'offline.json'), 'w', encoding='utf-8', newline='\n') as f:
+        json.dump(manifest, f, indent=1)
+    print(f'\ndone: {dest}\nWith this folder the setup needs no network: put it in the game\'s folder as offline/, '
+          f'or pass --offline "{dest}" (the game\'s executable takes it too).')
 
 
 def android_toolchain(cache):

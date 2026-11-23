@@ -70,9 +70,10 @@ def fetch_adb(dest, accepted):
     os.makedirs(os.path.join(dest, 'downloads'), exist_ok=True)
     local = os.path.join(dest, 'downloads', p['file'])
     if not (os.path.exists(local) and os.path.getsize(local) == p['size'] and toolchain.sha256(local) == p['sha256']):
-        print(f'downloading adb (Android SDK Platform-Tools {lock["platform_tools"]}, '
-              f'{p["size"] / 2**20:.0f} MB, from Google)', flush=True)
-        toolchain.get(p['url'], local)
+        if not toolchain.offline.find(p['size'], p['sha256']):
+            print(f'downloading adb (Android SDK Platform-Tools {lock["platform_tools"]}, '
+                  f'{p["size"] / 2**20:.0f} MB, from Google)', flush=True)
+        toolchain.obtain(p, local)
         if toolchain.sha256(local) != p['sha256']:
             os.remove(local)
             sys.exit(f'{p["file"]}: wrong SHA-256 (the download changed or was damaged)')
