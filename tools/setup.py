@@ -11,7 +11,8 @@ usage (no parts: a window asks, setupgui.py; --console: questions in the console
 its own --dump parts on as --install:
   python -I setup/kit/tools/setup.py [--console]
   python -I setup/kit/tools/setup.py [--install <pkg|folder|zip|vpk> [--license <work.bin|rif> | --zrif Z]] ...
-            [--offline PATH ...] [--cache DIR] [--jobs N] [--shortcut] [--steam] [--progress] [--exe FILE]
+            [--offline PATH ...] [--cache DIR] [--jobs N] [--shortcut] [--steam] [--progress] [--rebuild]
+            [--exe FILE]
   python -I setup/kit/tools/setup.py --download-only DIR [--for windows,linux,macos,android|all]
             [--offline PATH ...] [--accept-android-sdk-license]
   python -I setup/kit/tools/setup.py --add-to-steam
@@ -23,7 +24,10 @@ its own --dump parts on as --install:
               without --license or --zrif takes the licence beside it (work.bin, or a single .rif).
               When the game is built here by this release and the parts add only add-ons and mods
               (the game's own parts already installed, or left out), only those are installed: no
-              download, no build
+              download, no build. The same parts as the build here by this release (the same files,
+              unchanged), its modules all there: nothing to do ("progress 1.00 Already built" with
+              --progress), as a launcher that runs the setup again for every release expects
+  --rebuild   with --install: build again even when the game is built here from the same parts
   --offline  a folder (searched with its subfolders, four levels deep) or a file the downloads are
               taken from first, matched by size and SHA-256 whatever their names (offline.py): a folder
               --download-only made, or the firmware PUPs saved earlier. Repeat for more. The game's
@@ -75,7 +79,7 @@ sys.path.insert(0, TOOLS)
 import dumpinfo  # noqa: E402
 import offline  # noqa: E402
 import toolchain  # noqa: E402
-from gameproject import EXE_SUFFIX, MACOS, WINDOWS  # noqa: E402
+from gameproject import EXE_SUFFIX, MACOS, MODULE_SUFFIX, WINDOWS  # noqa: E402
 
 # the minimum macOS of the fork's build (CMAKE_OSX_DEPLOYMENT_TARGET) and of the modules (toolchain.py)
 MACOS_MINIMUM = '13.3'
@@ -369,12 +373,67 @@ def sha256(path):
     return h.hexdigest()
 
 
-def built_by_this_release(game, out, exe):
+def read_stamp(game, out):
     try:
         with open(stamp_path(game, out), encoding='utf-8') as f:
-            return json.load(f).get('exe_sha256') == sha256(exe)
+            return json.load(f)
     except (OSError, ValueError):
-        return False
+        return {}
+
+
+def write_stamp(game, out, exe, parts):
+    os.makedirs(os.path.dirname(stamp_path(game, out)), exist_ok=True)
+    with open(stamp_path(game, out), 'w', encoding='utf-8') as f:
+        json.dump({'exe_sha256': sha256(exe), 'built': time.strftime('%Y-%m-%d %H:%M:%S'),
+                   'copy': copy_signature(parts)}, f, indent=1)
+
+
+def built_by_this_release(game, out, exe):
+    return read_stamp(game, out).get('exe_sha256') == sha256(exe)
+
+
+def copy_signature(parts):
+    """What the parts were, to tell the same copy from a changed one: each file's path, size and time;
+    a folder's path, file count, total size and newest time; a zRIF only as its SHA-256."""
+    import hashlib
+    sig = []
+    for k in range(0, len(parts) - 1, 2):
+        key, value = parts[k], parts[k + 1]
+        if key == '--zrif':
+            sig.append([key, hashlib.sha256(value.encode()).hexdigest()])
+            continue
+        path = os.path.abspath(value)
+        if os.path.isdir(path):
+            n = size = newest = 0
+            for root, _, files in os.walk(path):
+                for name in files:
+                    try:
+                        st = os.stat(os.path.join(root, name))
+                    except OSError:
+                        continue
+                    n, size, newest = n + 1, size + st.st_size, max(newest, st.st_mtime_ns)
+            sig.append([key, path, 'folder', n, size, newest])
+        else:
+            try:
+                st = os.stat(path)
+                sig.append([key, path, st.st_size, st.st_mtime_ns])
+            except OSError:
+                sig.append([key, path])
+    return sig
+
+
+def module_files(game, out):
+    """The recompiled modules the build leaves in the game's folder."""
+    return [os.path.join(out, f'ssd_aot_{name}{MODULE_SUFFIX}') for name in game['modules'].values()]
+
+
+def already_built(game, out, exe, parts):
+    """Built here by this release from the same copy (the same parts), its modules all there: a
+    launcher's setup step run again (RecompLauncher runs it for every new release and when the player
+    changes their copy) has nothing to do."""
+    stamp = read_stamp(game, out)
+    return (stamp.get('exe_sha256') == sha256(exe) and stamp.get('copy') == copy_signature(parts)
+            and all(os.path.exists(m) for m in module_files(game, out)))
 
 
 def installed_version(out, title_id):
@@ -512,7 +571,7 @@ def main():
             opts[rest[j]] = rest[j + 1]
             j += 2
         elif rest[j] in ('--accept-microsoft-license', '--shortcut', '--steam', '--add-to-steam', '--console',
-                         '--progress', '--android', '--accept-android-sdk-license', '--push-only'):
+                         '--progress', '--android', '--accept-android-sdk-license', '--push-only', '--rebuild'):
             opts[rest[j]] = True
             j += 1
         else:
@@ -572,6 +631,13 @@ def main():
         sys.exit(f'Not installed: {unusable}')
     note_other_region_addons(parts, out, ids)
 
+    # built here by this release from these same parts: nothing to do, unless --rebuild
+    if parts and not opts.get('--android') and not opts.get('--rebuild') and already_built(game, out, exe, parts):
+        print('\nThe game is built here already, by this release and from this copy: nothing to do '
+              '(--rebuild builds it again)')
+        step(1.0, 'Already built')
+        return
+
     # the game built here by this release, and the parts bring only add-ons or mods (a launcher's
     # setup run again for a new add-on): those installed, nothing downloaded or built again
     addons = addon_parts(parts, out) if parts and not opts.get('--android') and \
@@ -585,9 +651,12 @@ def main():
             if run_logged(cmd):
                 sys.exit(f'installing {g[0]} failed (the game\'s log: {os.path.join(out, game["id"], "vita3k.log")})')
         warn_encrypted_addons(out)
+        write_stamp(game, out, exe, parts)  # these parts now, so the same run again has nothing to do
         print('\ndone: installed')
         step(1.0, 'Done')
         return
+    # a build cut short must never look finished: the stamp goes before anything is written
+    remove(stamp_path(game, out))
     # the downloads: inside setup/ and gone after the build, unless --cache keeps them elsewhere
     cache = os.path.abspath(opts['--cache']) if opts.get('--cache') else os.path.join(SETUP, 'downloads')
     work = os.path.join(SETUP, 'work')
@@ -639,10 +708,9 @@ def main():
     if not opts.get('--cache'):
         remove(cache)
     warn_encrypted_addons(out)
-    # what built it: a later run with only add-ons or mods installs them without building again
-    os.makedirs(os.path.dirname(stamp_path(game, out)), exist_ok=True)
-    with open(stamp_path(game, out), 'w', encoding='utf-8') as f:
-        json.dump({'exe_sha256': sha256(exe), 'built': time.strftime('%Y-%m-%d %H:%M:%S')}, f, indent=1)
+    # what built it, from what: a later run with the same parts has nothing to do, one with only add-ons
+    # or mods installs them without building again
+    write_stamp(game, out, exe, parts)
 
     if opts.get('--shortcut') and WINDOWS:
         lnk = desktop_shortcut(exe, game['name'])
