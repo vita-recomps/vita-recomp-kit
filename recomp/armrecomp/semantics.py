@@ -261,9 +261,9 @@ def dp_wide_imm(cx, base):
         raise Unsupported('write to pc')
     if cx.patched:
         # the loader writes this immediate (a variable import's address): decode it at run time
-        if base not in ('movw', 'movt') or not cx.thumb or cx.ins.size != 4:
+        if base not in ('movw', 'movt') or cx.ins.size != 4:
             raise Unsupported(f'loader-patched {base}')
-        imm = f'thumb_mov_imm16(0x{cx.addr:08x}u)'
+        imm = f'{"thumb" if cx.thumb else "arm"}_mov_imm16(0x{cx.addr:08x}u)'
         if base == 'movw':
             cx.emit(f'ctx->r[{d}] = {imm};')
         else:

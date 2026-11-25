@@ -172,6 +172,13 @@ inline uint32_t thumb_mov_imm16(uint32_t addr) {
     return (hw1 & 0xf) << 12 | ((hw1 >> 10) & 1) << 11 | ((hw2 >> 12) & 7) << 8 | (hw2 & 0xff);
 }
 
+// imm16 of the ARM-mode movw/movt at addr (imm4:imm12), read from guest memory, for the same reason
+// (R_ARM_MOVW_ABS_NC / R_ARM_MOVT_ABS sites in ARM code: Phantasy Star Nova's eboot)
+inline uint32_t arm_mov_imm16(uint32_t addr) {
+    const uint32_t w = rd32(addr);
+    return ((w >> 4) & 0xf000) | (w & 0xfff);
+}
+
 inline uint32_t bswap32(uint32_t x) {
     return (x >> 24) | ((x >> 8) & 0xff00u) | ((x << 8) & 0xff0000u) | (x << 24);
 }

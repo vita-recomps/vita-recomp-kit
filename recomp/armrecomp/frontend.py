@@ -89,12 +89,13 @@ class Module:
         # relocatable modules every relocation (movw/movt pairs and Abs32 literals)
         seg0 = self.elf.segments[0]
         relocs = [(a, c) for a, c in vitaelf.relocation_sites(self.elf) if seg0.vaddr <= a < seg0.vaddr + seg0.filesz]
-        unexpected = {c for _, c in relocs} - {2, 47, 48}
+        # 2 Abs32, 43/44 ARM movw/movt (R_ARM_MOVW_ABS_NC, R_ARM_MOVT_ABS), 47/48 their Thumb forms
+        unexpected = {c for _, c in relocs} - {2, 43, 44, 47, 48}
         if unexpected:
             raise ValueError(f'{elf_path}: code relocations of types {sorted(unexpected)} are not handled')
         var_sites = {a for a, _, _ in self.elf.var_import_sites}
         # movw/movt whose immediates generated code reads at run time
-        self.patched = frozenset(a + delta for a in var_sites | {a for a, c in relocs if c in (47, 48)})
+        self.patched = frozenset(a + delta for a in var_sites | {a for a, c in relocs if c in (43, 44, 47, 48)})
         # every patched word, for the code hash (runtime addresses)
         self.patched_words = frozenset(a + delta for a in var_sites | {a for a, _ in relocs})
         # register jumps (bx rN) whose target the inventory resolved to a function entry (libc's
