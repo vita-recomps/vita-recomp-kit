@@ -54,11 +54,12 @@ ZIG_EXPORTS = '{\n  global: armrecomp_aot_init; armrecomp_aot_features;\n  local
 # Android: arm64 with musl's headers (the functions a module calls have the same ABI in bionic), every
 # ARMv8 (LL/SC atomics inline: no outline atomics, which would want compiler-rt and getauxval), unwind
 # tables for the escapes the host throws through generated frames, no stack protector (bionic's guard
-# is not musl's). Linked without a C library: libc.so and libm.so stubs give the DT_NEEDED entries,
-# --eh-frame-hdr the PT_GNU_EH_FRAME the host's unwinder looks for, 16 KiB alignment the 16 KiB-page
-# devices since Android 15
+# is not musl's), position-independent code for a shared library (ZIG_CXXFLAGS leaves -fPIC out on
+# Windows hosts, ss-delta #23). Linked without a C library: libc.so and libm.so stubs give the
+# DT_NEEDED entries, --eh-frame-hdr the PT_GNU_EH_FRAME the host's unwinder looks for, 16 KiB
+# alignment the 16 KiB-page devices since Android 15
 ANDROID_TARGET = ['-target', 'aarch64-linux-musl', '-mcpu=generic', '-mno-outline-atomics']
-ANDROID_CXXFLAGS = ['-fno-stack-protector', '-funwind-tables']
+ANDROID_CXXFLAGS = ['-fPIC', '-fno-stack-protector', '-funwind-tables']
 ANDROID_LDFLAGS = ['-shared', '-nostdlib', '-Wl,--eh-frame-hdr', '-Wl,-z,max-page-size=16384', '-Wl,--gc-sections', '-s']
 USER_AGENT = 'vita-recomp-kit toolchain.py'
 
