@@ -15,6 +15,7 @@ kit's recompiler and build scripts. Laid out for the APK's Gradle project (its b
       zig/lib/                 zig's lib/, without what an aarch64-linux-musl build never reads
       kit/recomp, kit/tools    this kit's recompiler and scripts (android-setup.py runs the build)
       game.json                the game the APK is for (--project), which android-setup.py reads
+      <its overrides>          the recompiler overrides game.json names (recomp_overrides), at their paths
   <out>/assets/buildtools.json  the versions; the app unpacks again when it changes
 
 usage:
@@ -164,6 +165,12 @@ def main():
             # first: the app reads the game's name from it without unpacking the rest
             z.write(game_json, 'game.json')
             count += 1
+            # the recompiler overrides game.json names, at the same paths beside it (gameproject.py
+            # passes them to recompile.py; the build stops without them)
+            project = json.load(open(game_json, encoding='utf-8'))
+            for rel in sorted(set(project.get('recomp_overrides', {}).values())):
+                z.write(os.path.join(os.path.abspath(a.project), rel), rel.replace(os.sep, '/'))
+                count += 1
             count += zip_tree(z, os.path.join(py, 'lib', f'python{version}'), f'python/lib/python{version}',
                               lambda rel: rel.split('/')[0] in PYTHON_DROP or rel.startswith('config-'))
             count += zip_tree(z, os.path.join(work, 'capstone', 'capstone'), 'site/capstone')
