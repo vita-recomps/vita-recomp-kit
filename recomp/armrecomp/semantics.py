@@ -1021,6 +1021,11 @@ def translate(ins, thumb, imports, func_start, func_end, jumptables, patched=fro
             t.kind = 'nop'
         elif m in ('udf', 'bkpt'):
             t.kind = 'trap' if m == 'udf' else 'nop'
+        elif not thumb and m.startswith('svc') and cs.cc not in (arm.ARM_CC_AL, arm.ARM_CC_INVALID):
+            # an ARM-mode conditional svc: no compiler emits one. It is data the linear decode read as
+            # code (a literal word after a function's last return, or Thumb code after an ARM
+            # function's): a trap, so the function is recompiled and the word reports if ever run
+            t.kind = 'trap'
         elif m == 'b' or (m[0] == 'b' and m[1:] in COND_EXPR and len(m) == 3):
             target = ops[0].imm & 0xffffffff
             t.target = target

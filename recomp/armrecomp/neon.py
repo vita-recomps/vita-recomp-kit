@@ -181,7 +181,7 @@ def translate(cx):
         (d, nb, _), (m, _, _) = regs()
         emit(f'vrev<{INT[t0]}, {int(base[4:]) // 8}, {nb}>(ctx, {d}, {m});')
         return
-    if base in ('vtrn', 'vzip'):
+    if base in ('vtrn', 'vzip', 'vuzp'):
         (d, nb, _), (m, _, _) = regs()
         t = INT[t0]
         emit(f'{base}<{t}, {lanes(t, nb)}>(ctx, {d}, {m});')
@@ -212,9 +212,20 @@ def translate(cx):
         return float_op(cx, base, ops)
     if base == 'vcvt':
         (d, nb, _), (m, _, _) = regs()
-        if len(ops) != 2:
-            raise Unsupported('vcvt with fraction bits')
         n = nb // 4
+        if len(ops) == 3:
+            # fixed point: the third operand is the number of fraction bits
+            if ops[2].type != arm.ARM_OP_IMM:
+                raise Unsupported('vcvt with fraction bits')
+            fixed = {('s32', 'f32'): ('float', 'int32_t', 'FToS32Fx'), ('u32', 'f32'): ('float', 'uint32_t', 'FToU32Fx'),
+                     ('f32', 's32'): ('int32_t', 'float', 'S32ToFFx'), ('f32', 'u32'): ('uint32_t', 'float', 'U32ToFFx')}
+            if (types[0], types[1]) not in fixed:
+                raise Unsupported(f'vcvt.{".".join(types)} with fraction bits')
+            src, dst, f = fixed[(types[0], types[1])]
+            emit(f'map1<{src}, {dst}, {n}>(ctx, {d}, {m}, {f}{{{repr(float(2 ** ops[2].imm))}}});')
+            return
+        if len(ops) != 2:
+            raise Unsupported('vcvt form')
         conv = {('f32', 's32'): ('int32_t', 'float', 'S32ToF'), ('f32', 'u32'): ('uint32_t', 'float', 'U32ToF'),
                 ('s32', 'f32'): ('float', 'int32_t', 'FToS32'), ('u32', 'f32'): ('float', 'uint32_t', 'FToU32')}
         if (types[0], types[1]) == ('f32', 'f16'):

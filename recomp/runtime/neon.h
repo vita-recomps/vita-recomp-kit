@@ -269,6 +269,25 @@ inline void vzip(GuestContext *c, unsigned d, unsigned m) {
     vset(c, m, hi);
 }
 
+// vuzp: d and m read as one sequence (d's elements, then m's); d gets the even ones, m the odd ones
+template <typename T, int N>
+inline void vuzp(GuestContext *c, unsigned d, unsigned m) {
+    const auto a = vget<T, N>(c, d);
+    const auto b = vget<T, N>(c, m);
+    T z[2 * N];
+    for (int i = 0; i < N; i++) {
+        z[i] = a.e[i];
+        z[N + i] = b.e[i];
+    }
+    Vec<T, N> even, odd;
+    for (int i = 0; i < N; i++) {
+        even.e[i] = z[2 * i];
+        odd.e[i] = z[2 * i + 1];
+    }
+    vset(c, d, even);
+    vset(c, m, odd);
+}
+
 // vtbl.8 d, {n .. n+len-1}, m: byte lookup, out of range -> 0
 inline void vtbl(GuestContext *c, unsigned d, unsigned n, unsigned len, unsigned m) {
     uint8_t table[32];
@@ -550,6 +569,42 @@ struct FToU32 {
 };
 struct S32ToF { float operator()(int32_t a, bool &) const { return static_cast<float>(a); } };
 struct U32ToF { float operator()(uint32_t a, bool &) const { return static_cast<float>(a); } };
+// vcvt with fraction bits: scale = 2^fbits. To fixed point: the scaled value rounded towards zero
+// and saturated (NaN -> 0), as the integer forms; from fixed point: divided exactly, rounded once
+struct FToS32Fx {
+    double scale;
+    int32_t operator()(float a, bool &) const {
+        a = nf_in(a);
+        if (a != a)
+            return 0;
+        const double x = static_cast<double>(a) * scale;
+        if (x >= 2147483648.0)
+            return std::numeric_limits<int32_t>::max();
+        if (x <= -2147483648.0)
+            return std::numeric_limits<int32_t>::min();
+        return static_cast<int32_t>(x);
+    }
+};
+struct FToU32Fx {
+    double scale;
+    uint32_t operator()(float a, bool &) const {
+        a = nf_in(a);
+        const double x = static_cast<double>(a) * scale;
+        if (a != a || x <= 0.0)
+            return 0;
+        if (x >= 4294967296.0)
+            return std::numeric_limits<uint32_t>::max();
+        return static_cast<uint32_t>(x);
+    }
+};
+struct S32ToFFx {
+    double scale;
+    float operator()(int32_t a, bool &) const { return static_cast<float>(static_cast<double>(a) / scale); }
+};
+struct U32ToFFx {
+    double scale;
+    float operator()(uint32_t a, bool &) const { return static_cast<float>(static_cast<double>(a) / scale); }
+};
 // half <-> single precision (vcvt.f32.f16 / vcvt.f16.f32), on the bits, with NEON's standard FPSCR:
 // default NaN, flush-to-zero (of single inputs; half values are never flushed), round to nearest
 struct H2F {
