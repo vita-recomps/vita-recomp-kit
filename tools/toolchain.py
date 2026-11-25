@@ -217,6 +217,46 @@ def zig_executable(toolchain_dir):
     return None
 
 
+# An Android module may only call what bionic's libc and libm export: the front end links libc++
+# statically and exports none of it, so a module that needs a libc++ function (std::chrono's clocks,
+# std::thread, iostreams, ...) isn't loaded at all (dlopen: "cannot locate symbol"), and the game stops
+# at its first native call (utakata 0.2.0's mouse camera override, 2026-11-25). Checked after linking.
+ANDROID_FORBIDDEN_PREFIXES = ('_Z', '__cxa_', '__gxx_', '__dynamic_cast')
+
+
+def elf_undefined_symbols(path):
+    """The undefined dynamic symbols of a 64-bit little-endian ELF shared library (.dynsym)."""
+    import struct
+    with open(path, 'rb') as f:
+        data = f.read()
+    if data[:4] != b'\x7fELF' or data[4] != 2 or data[5] != 1:
+        raise ValueError(f'{path}: not a 64-bit little-endian ELF')
+    shoff, = struct.unpack_from('<Q', data, 0x28)
+    shentsize, shnum = struct.unpack_from('<HH', data, 0x3a)
+    sections = [struct.unpack_from('<IIQQQQIIQQ', data, shoff + i * shentsize) for i in range(shnum)]
+    names = []
+    for _, kind, _, _, offset, size, link, _, _, entsize in sections:
+        if kind != 11 or not entsize:  # SHT_DYNSYM
+            continue
+        strings = data[sections[link][4]:sections[link][4] + sections[link][5]]
+        for i in range(1, size // entsize):
+            st_name, _, _, st_shndx = struct.unpack_from('<IBBH', data, offset + i * entsize)
+            if st_shndx == 0 and st_name:  # SHN_UNDEF
+                names.append(strings[st_name:strings.index(b'\0', st_name)].decode())
+    return names
+
+
+def check_android_module(so):
+    """None, or why the Android module `so` wouldn't load (symbols bionic doesn't have)."""
+    bad = sorted(n for n in elf_undefined_symbols(so) if n.startswith(ANDROID_FORBIDDEN_PREFIXES))
+    if not bad:
+        return None
+    return (f"{os.path.basename(so)} needs C++ library functions that Android's app doesn't provide, so it "
+            f"wouldn't load: {', '.join(bad[:8])}{' ...' if len(bad) > 8 else ''}. A game project's "
+            "recompiler overrides (game.json recomp_overrides) may use only the C library: see "
+            "check-overrides.py")
+
+
 def build_modules_zig(gen, modules, build, toolchain_dir, jobs=4, defines=(), android=False):
     """Linux and macOS: generated/<module>/ into <build>/ssd_aot_<module>.so (.dylib) with zig's clang.
     android: ssd_aot_<module>.so for Android arm64 instead, from any host."""
@@ -288,6 +328,11 @@ def build_modules_zig(gen, modules, build, toolchain_dir, jobs=4, defines=(), an
                 err = run([zig, 'c++', *ZIG_TARGET, '-shared', *unused, '-s', '-o', so, entry, lib], env)
         if err is not None:
             sys.exit(f'{m}: linking failed\n{err}')
+        if android:
+            problem = check_android_module(so)
+            if problem:
+                os.remove(so)  # not left for a later run to take as built
+                sys.exit(problem)
     # zig's cache holds a copy of every object (1.5 GB for Soul Sacrifice Delta) besides libc++:
     # the objects are in <build>/obj already, and libc++ is rebuilt in a minute when needed again
     shutil.rmtree(cache, ignore_errors=True)

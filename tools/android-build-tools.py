@@ -38,6 +38,7 @@ import tempfile
 import zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import gameproject  # noqa: E402
 import toolchain  # noqa: E402
 
 KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -113,6 +114,8 @@ def main():
     game_json = os.path.join(os.path.abspath(a.project), 'game.json')
     if not os.path.isfile(game_json):
         sys.exit(f'no game.json in {a.project}')
+    project = gameproject.Project(a.project)
+    project.check_build_files()
     out = os.path.abspath(a.out)
     libs = os.path.join(out, 'jniLibs', ABI)
     assets = os.path.join(out, 'assets')
@@ -165,11 +168,10 @@ def main():
             # first: the app reads the game's name from it without unpacking the rest
             z.write(game_json, 'game.json')
             count += 1
-            # the recompiler overrides game.json names, at the same paths beside it (gameproject.py
-            # passes them to recompile.py; the build stops without them)
-            project = json.load(open(game_json, encoding='utf-8'))
-            for rel in sorted(set(project.get('recomp_overrides', {}).values())):
-                z.write(os.path.join(os.path.abspath(a.project), rel), rel.replace(os.sep, '/'))
+            # the files a build reads besides game.json (its recompiler overrides), at the same paths
+            # beside it (gameproject.py passes them to recompile.py; the build stops without them)
+            for rel in project.build_files():
+                z.write(os.path.join(project.root, rel), rel.replace(os.sep, '/'))
                 count += 1
             count += zip_tree(z, os.path.join(py, 'lib', f'python{version}'), f'python/lib/python{version}',
                               lambda rel: rel.split('/')[0] in PYTHON_DROP or rel.startswith('config-'))
@@ -183,7 +185,17 @@ def main():
             count += zip_tree(z, os.path.join(zig, 'lib'), 'zig/lib', zig_drop)
             count += zip_tree(z, os.path.join(KIT, 'recomp'), 'kit/recomp', lambda rel: rel.split('/')[0] == 'tests')
             count += zip_tree(z, os.path.join(KIT, 'tools'), 'kit/tools', lambda rel: not rel.endswith('.py'))
-        stamp = {k: lock[k] for k in ('python', 'zig', 'capstone', 'pyyaml')}
+        # read back: what the device's build opens is all there (0.5.0-0.5.2 of ss-delta and 0.2.0 of utakata
+        # shipped without their overrides, and only a device found out)
+        with zipfile.ZipFile(os.path.join(assets, 'buildtools.zip')) as z:
+            names = set(z.namelist())
+        needed = ['game.json', *(rel.replace(os.sep, '/') for rel in project.build_files()),
+                  'kit/tools/android-setup.py', 'kit/tools/gameproject.py', 'kit/tools/toolchain.py',
+                  'kit/recomp/recompile.py']
+        missing = [n for n in needed if n not in names]
+        if missing:
+            sys.exit(f'buildtools.zip lacks {", ".join(missing)}')
+        stamp ={k: lock[k] for k in ('python', 'zig', 'capstone', 'pyyaml')}
         stamp['files'] = count
         stamp['zip_sha256'] = toolchain.sha256(os.path.join(assets, 'buildtools.zip'))
         with open(os.path.join(assets, 'buildtools.json'), 'w', encoding='utf-8', newline='\n') as f:

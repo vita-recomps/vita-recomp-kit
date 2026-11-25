@@ -309,9 +309,15 @@ def copy_kit(out, p):
     game = os.path.join(kit, 'game')
     os.makedirs(game)
     shutil.copy2(os.path.join(p.root, 'game.json'), game)
-    for rel in ([p.dist_readme] if p.dist_readme else []) + sorted(set(p.recomp_overrides.values())):
+    # the files a build reads (the same list android-build-tools.py packs), checked first: a module whose
+    # overrides Android can't load is refused here, before any release carries them
+    p.check_build_files()
+    for rel in ([p.dist_readme] if p.dist_readme else []) + p.build_files():
         os.makedirs(os.path.dirname(os.path.join(game, rel)), exist_ok=True)
         shutil.copy2(os.path.join(p.root, rel), os.path.join(game, rel))
+    missing = [rel for rel in p.build_files() if not os.path.isfile(os.path.join(game, rel))]
+    if missing:
+        sys.exit(f'setup/kit/game lacks {", ".join(missing)}')
 
 
 def bundle_toolchain(out, platform):

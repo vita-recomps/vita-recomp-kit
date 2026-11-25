@@ -89,11 +89,33 @@ class Project:
         self.android_package = g.get('android_package') or 'io.github.vitarecomps.' + ''.join(
             c for c in self.id.lower() if c.isalnum())
 
+    def build_files(self):
+        """The project files a build of the game's code reads besides game.json (recompile_args), as
+        project paths. Every package that builds the game carries them at the same paths: a release's
+        setup/kit/game (make-setup.py) and the APK's build tools (android-build-tools.py)."""
+        return sorted(set(self.recomp_overrides.values()))
+
+    def check_build_files(self):
+        """Stops with a message if a build file is missing or its overrides would keep a module built for
+        Android from loading (check-overrides.py): a release or an APK is never packed with them."""
+        import importlib.util
+        here = os.path.dirname(os.path.abspath(__file__))
+        spec = importlib.util.spec_from_file_location('check_overrides', os.path.join(here, 'check-overrides.py'))
+        check = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(check)
+        problems = check.check_project(self.root)
+        if problems:
+            sys.exit('\n'.join(problems))
+
     def recompile_args(self, module):
         """recompile.py's options for a module (as dumped): its load base and the project's overrides."""
         args = ['--load-base', self.load_bases[module]] if module in self.load_bases else []
         if module in self.recomp_overrides:
-            args += ['--overrides', os.path.join(self.root, self.recomp_overrides[module])]
+            path = os.path.join(self.root, self.recomp_overrides[module])
+            if not os.path.isfile(path):
+                sys.exit(f'{self.recomp_overrides[module]} (game.json recomp_overrides) is missing from '
+                         f'{self.root}: this package of the game is incomplete')
+            args += ['--overrides', path]
         return args
 
     def unsupported_eboot(self, digest, log):

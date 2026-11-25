@@ -170,6 +170,17 @@ executable's).
 like game data (ELFs, pkgs, PUPs, licences, recompiled modules, saves,
 logs).
 
+A game's recompiler overrides (`game.json` `recomp_overrides`) are compiled
+into its modules on every platform, Android's too, where the front end
+exports none of libc++: they may use only header-only C++ and the C
+library. `tools/check-overrides.py <game>` checks that, and that each file
+is there; `make-setup.py` and `android-build-tools.py` run it and carry the
+files (`gameproject.py` `build_files()`; the APK's `buildtools.zip` is read
+back), and `toolchain.py` checks every Android module's undefined symbols
+after linking. All three were added after utakata 0.2.0 and ss-delta
+0.5.0-0.5.2 shipped Android builds that couldn't build or load their
+overrides (2026-11-25).
+
 ### Linux (and the Steam Deck)
 
 The fork builds the games' front ends on Linux as `<id>.x86_64`
