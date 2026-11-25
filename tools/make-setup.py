@@ -31,6 +31,10 @@ usage:
   python -I make-setup.py resolve-macos <lock.json> <tag>   the same for Apple Silicon macOS
   python -I make-setup.py build <lock.json> --project DIR --bin DIR --out DIR [--apk FILE]
                            [--zip [--archive PATH]]
+  python -I make-setup.py download <lock.json> --out DIR
+                           only the downloads build makes (Python, the wheels, the platform's zig)
+                           into <DIR's parent>/setup-downloads, where build takes them from; a CI
+                           job runs it first and keeps the folder between runs
 
   --out       the game's folder to make (its name is the archive's top folder)
   --apk       the game's APK for Android (the release workflow's android job), as setup/android/<id>.apk
@@ -264,16 +268,31 @@ def resolve_linux(lock_path, cache, tag, platform='linux'):
 
 
 def fetch(lock, cache):
+    """The lock's files in cache/, kept when already there; downloaded as toolchain.obtain does (its
+    mirrors, a source slower than toolchain.MIN_SPEED left for the next one, the SHA-256 checked)."""
+    import toolchain
     os.makedirs(cache, exist_ok=True)
     paths = {}
     for f in lock['files']:
-        local = os.path.join(cache, os.path.basename(f['url']))
-        if not (os.path.exists(local) and sha256(local) == f['sha256']):
-            get(f['url'], local)
-            if sha256(local) != f['sha256']:
-                sys.exit(f'{local}: wrong SHA-256')
+        name = os.path.basename(f['url'])
+        local = os.path.join(cache, name)
+        toolchain.obtain({'file': name, 'url': f['url'], 'sha256': f['sha256'], 'size': f['size'],
+                          'mirrors': f.get('mirrors', [])}, local)
         paths.setdefault(f['kind'], []).append(local)
     return paths
+
+
+def download(a):
+    """make-setup.py download: what build downloads, without building (fetch, and toolchain.download
+    for the zig that bundle_toolchain unpacks)."""
+    import toolchain
+    lock = json.load(open(a.lock, encoding='utf-8'))
+    platform = lock.get('platform', 'windows')
+    cache = downloads_dir(os.path.abspath(a.out))
+    fetch(lock, cache)
+    toolchain.download(json.load(open(os.path.join(KIT, 'tools', f'toolchain-{platform}.json'), encoding='utf-8')),
+                       os.path.join(cache, f'toolchain-{platform}', 'downloads'))
+    print(f'{cache}: the {platform} setup\'s downloads are there')
 
 
 def copy_tree(src, dst, skip=('__pycache__', 'tests')):
@@ -561,15 +580,20 @@ def main():
                       sys.argv[1].split('-')[1])
         return
     ap = argparse.ArgumentParser(usage=__doc__)
-    ap.add_argument('command', choices=['build'])
+    ap.add_argument('command', choices=['build', 'download'])
     ap.add_argument('lock')
     ap.add_argument('--project', default=os.getcwd())
-    ap.add_argument('--bin', required=True)
+    ap.add_argument('--bin', default='')
     ap.add_argument('--out', required=True)
     ap.add_argument('--apk', default='')
     ap.add_argument('--zip', action='store_true')
     ap.add_argument('--archive', default='')
-    build(ap.parse_args())
+    a = ap.parse_args()
+    if a.command == 'download':
+        return download(a)
+    if not a.bin:
+        ap.error('build needs --bin')
+    build(a)
 
 
 if __name__ == '__main__':
