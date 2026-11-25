@@ -39,6 +39,9 @@ Steps (comma separated):
   tdown:<x>:<y>     put the finger down and keep it there; tup lifts it
   record:<n>:<dir>  save the next n rendered frames into dir (front end); returns at once
   memdump:<addr>:<size>:<path>  write guest memory (hex address and size) to path (front end)
+  text:<text>       type text into the game's open keyboard dialog, e.g. a player name (front end;
+                    no commas: they separate steps)
+  textsubmit        press Enter on that dialog (front end)
   memwrite:<addr>:<bytes>  write bytes (hex, memory order, e.g. 00007a44 for 1000.0f) to guest
                     memory at a hex address (front end)
   menu              open or close the front end's settings menu
@@ -70,7 +73,7 @@ STICKS = {"ls_up": (1, -1.0), "ls_down": (1, 1.0), "ls_left": (0, -1.0), "ls_rig
           "rs_up": (3, -1.0), "rs_down": (3, 1.0), "rs_left": (2, -1.0), "rs_right": (2, 1.0)}
 # single-game front ends of the fork: executable -> start of its window title
 FRONTENDS = {"ss-delta.exe": "Soul Sacrifice Delta", "shinobido2.exe": "Shinobido 2",
-             "vekta-mercenary.exe": "Killzone Mercenary"}
+             "vekta-mercenary.exe": "Killzone Mercenary", "re-nova.exe": "Re:NOVA"}
 EXE = "ss-delta.exe"  # --exe, or the one front end in <vita3k dir>
 WINDOW_TITLE = FRONTENDS[EXE]  # --title
 IMAGES = ("Vita3K.exe", EXE)
@@ -321,6 +324,11 @@ def run(steps, fps_csv):
         elif step.startswith("memdump:"):
             _, address, size, path = step.split(":", 3)
             pad.memdump(int(address, 16), int(size, 16), path)
+        elif step.startswith("text:"):
+            # typed into the game's open keyboard dialog (a player name); sent as UTF-8 hex
+            pad.command(f"text {step[len('text:'):].encode('utf-8').hex()}")
+        elif step == "textsubmit":
+            pad.command("textsubmit")
         elif step.startswith("memwrite:"):
             _, address, data = step.split(":")
             try:
@@ -390,6 +398,11 @@ def select_frontend(root, exe, title):
 
 
 def main():
+    # window titles can hold text the console's code page lacks (a Japanese game's in Vita3K): print it
+    # escaped rather than fail
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="backslashreplace")
     global PLAYER
     player = take_option("--player")
     if player:
