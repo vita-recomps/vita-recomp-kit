@@ -1076,6 +1076,13 @@ def translate(ins, thumb, imports, func_start, func_end, jumptables, patched=fro
             idx = cx.r(reg_index(cs, ops[1].mem.index))
             t.kind = 'jumptable'
             t.jumptable = (idx, jumptables[ins.address])
+        elif not thumb and m == 'ldr' and ins.address in jumptables and cs.cc in (arm.ARM_CC_AL, arm.ARM_CC_INVALID) and                 ops[0].type == arm.ARM_OP_REG and cx.ridx(ops[0]) == 15 and ops[1].type == arm.ARM_OP_MEM and                 ops[1].mem.base == arm.ARM_REG_PC and ops[1].mem.index and ops[1].shift.value == 2 and                 not ops[1].subtracted:
+            # ARM ldr pc, [pc, rI, lsl #2] over the case addresses after it (the inventory's arm_ldr,
+            # bounded by a cmp and a branch to the default case before it): a switch, so every case
+            # has native code (as an indirect jump, a case inside the function found none)
+            idx = cx.r(reg_index(cs, ops[1].mem.index))
+            t.kind = 'jumptable'
+            t.jumptable = (idx, jumptables[ins.address])
         elif thumb and m == 'mov' and ins.address in jumptables and len(ops) == 2 and ops[0].type == arm.ARM_OP_REG and \
                 cx.ridx(ops[0]) == 15 and ops[1].type == arm.ARM_OP_REG and len(jumptables[ins.address]) > 1:
             # mov pc, rX into evenly spaced steps (the inventory's stride_table): a switch over the steps
