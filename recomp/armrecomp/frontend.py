@@ -1,5 +1,6 @@
 """Front end: the inventory's per-function decode (tools/inventory.py) plus Capstone instruction
 details, as the input of the emitter."""
+import struct
 import os, sys
 from dataclasses import dataclass, field
 
@@ -152,3 +153,24 @@ class Module:
         """the module's bytes at a runtime address, as in the ELF"""
         o = addr - self.delta - self.inv.text.vaddr
         return self.inv.code[o:o + size]
+
+    def veneer_stub(self, addr):
+        """The import stub a linker veneer at runtime address `addr` jumps to, or None.
+        A Thumb veneer is `movw ip, #lo; movt ip, #hi; bx ip` (10 bytes), placed by the linker so
+        Thumb code can reach an ARM import stub; it isn't a function of its own, so a call to it
+        would otherwise go through the fallback CPU (Phantasy Star Nova's eboot has islands of them)."""
+        b = self.code_bytes(addr & ~1, 10)
+        if len(b) != 10:
+            return None
+        h = struct.unpack('<5H', b)
+        def imm16(hw1, hw2):
+            return (hw1 & 0xf) << 12 | ((hw1 >> 10) & 1) << 11 | ((hw2 >> 12) & 7) << 8 | (hw2 & 0xff)
+        if not ((h[0] & 0xfbf0) == 0xf240 and (h[1] & 0x8f00) == 0x0c00      # movw ip, #lo
+                and (h[2] & 0xfbf0) == 0xf2c0 and (h[3] & 0x8f00) == 0x0c00  # movt ip, #hi
+                and h[4] == 0x4760):                                            # bx ip
+            return None
+        target = (imm16(h[2], h[3]) << 16 | imm16(h[0], h[1])) & ~1
+        for stub in (target, target + self.delta):  # as in the ELF, or as the loader relocates it
+            if stub in self.imports:
+                return stub
+        return None

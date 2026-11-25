@@ -232,6 +232,9 @@ class FunctionEmitter:
                 callee = target & ~1
                 if callee in self.recompiled:
                     lines.append(f'RECOMP_CALL({fname(callee)}, 0x{callee | self.module_mode(callee, ins):08x}u);')
+                elif (stub := self.module.veneer_stub(callee)) is not None:
+                    # a linker veneer to an import stub: call the import as the veneer would
+                    lines.append(f'call_import(ctx, 0x{stub:08x}u);')
                 else:
                     mode = self.module_mode(callee, ins)
                     lines.append(f'call_indirect(ctx, 0x{callee | mode:08x}u);')
