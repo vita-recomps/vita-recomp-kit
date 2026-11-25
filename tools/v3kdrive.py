@@ -1,7 +1,8 @@
 r"""Drive the portable Vita3K (Qt frontend) for baseline runs, without taking keyboard focus.
 
-Buttons go through our Vita3K fork's input pipe (\\.\pipe\v3kdrive, enabled by
-VITA3K_INPUT_PIPE, which `launch` sets). Builds without it (the upstream release) get
+Buttons go through our Vita3K fork's input pipe (\\.\pipe\v3kdrive-<hash>, enabled by
+VITA3K_INPUT_PIPE, which `launch` and `start` set; the hash is of the executable's path, so games
+started from different folders, or by other sessions, never share a pipe). Builds without it (the upstream release) get
 WM_KEYDOWN/WM_KEYUP posted to the game window instead, which Qt ignores while the window
 is unfocused. Neither path takes keyboard focus. Screenshots use PrintWindow on the game
 window. FPS is sampled from the game window title ("... | 30 FPS (33 ms) | 960x544 | ...").
@@ -23,8 +24,15 @@ usage:
   --title PREFIX (anywhere): the start of the front end's window title; by default the one
   FRONTENDS lists for its executable (for an executable it does not list, any title).
   --player N (anywhere, front end): the copy of the game for Ad Hoc Play player N (2-4): start
-  passes it on, and the other commands use that copy's window and input pipe (v3kdrive<N>).
+  passes it on, and the other commands use that copy's window and input pipe (v3kdrive-<hash>-<N>).
   Without it they use player 1's.
+  --allow-others (anywhere): start or launch even while another game runs (any front end of the
+  fork, or a Vita3K, from any folder). Without it they refuse: two games on one PC skew each
+  other's timings, and a driver from another session may be driving the other one.
+
+Guardrails: every command sees only the processes started from <vita3k dir>: windows, screenshots
+and close never touch a game another session started elsewhere. Input is sent only after checking
+that the pipe's server is the process that owns the game window.
 
 Steps (comma separated):
   <button>          tap (100 ms)          cross circle square triangle start select
@@ -49,7 +57,7 @@ Steps (comma separated):
                     had captured it (its mouse camera turns that into the right stick)
   mark:<label>      label the following FPS samples in the CSV
 """
-import csv, ctypes, os, re, subprocess, sys, time
+import csv, ctypes, hashlib, msvcrt, os, re, subprocess, sys, time
 from ctypes import wintypes
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -67,7 +75,8 @@ KEYS = {
     "rs_right": (0x4C, 0x26, False),
     "f12": (0x7B, 0x58, False),
 }
-PIPE = r"\\.\pipe" + "\\"  # + v3kdrive, or v3kdrive<N> for player N
+PIPE = r"\\.\pipe" + "\\"  # + pipe_name()
+ROOT = "."  # <vita3k dir>; only processes started from it are ours
 PLAYER = 1  # --player N: Ad Hoc Play's copy N of the front end (window "... (player N)")
 STICKS = {"ls_up": (1, -1.0), "ls_down": (1, 1.0), "ls_left": (0, -1.0), "ls_right": (0, 1.0),
           "rs_up": (3, -1.0), "rs_down": (3, 1.0), "rs_left": (2, -1.0), "rs_right": (2, 1.0)}
@@ -77,22 +86,67 @@ FRONTENDS = {"ss-delta.exe": "Soul Sacrifice Delta", "shinobido2.exe": "Shinobid
 EXE = "ss-delta.exe"  # --exe, or the one front end in <vita3k dir>
 WINDOW_TITLE = FRONTENDS[EXE]  # --title
 IMAGES = ("Vita3K.exe", EXE)
+ALLOW_OTHERS = False  # --allow-others
 # a Vita3K game window shows the app's title ID, e.g. "(PCSA00152)", before its first FPS update
 TITLE_ID_RE = re.compile(r"\([A-Z]{4}\d{5}\)")
 TITLE_RE = re.compile(r"\| (?:\S+) \| (\d+) FPS \((\d+) ms\) \| (\d+)x(\d+)")
 
 
-def windows(with_image=False):
-    """(hwnd, title) for every visible top-level window owned by a Vita3K.exe or front-end process;
-    (hwnd, title, image) with with_image."""
-    out = []
-    pids = {}
-    for image in IMAGES:
+def canonical(path):
+    return os.path.normcase(os.path.realpath(path))
+
+
+def process_path(pid):
+    """the executable's full path, or None (process gone, or not ours to query)"""
+    kernel32 = ctypes.windll.kernel32
+    h = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not h:
+        return None
+    try:
+        buf = ctypes.create_unicode_buffer(32768)
+        size = wintypes.DWORD(len(buf))
+        if not kernel32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
+            return None
+        return buf.value
+    finally:
+        kernel32.CloseHandle(h)
+
+
+def processes(images, anywhere=False):
+    """{pid: (image, path)} for the running processes of these images; only those started from
+    ROOT unless anywhere"""
+    out = {}
+    for image in images:
         r = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {image}", "/FO", "CSV", "/NH"],
                            capture_output=True, text=True)
         for row in csv.reader(r.stdout.splitlines()):
             if len(row) > 1 and row[0].lower() == image.lower():
-                pids[int(row[1])] = image
+                pid = int(row[1])
+                path = process_path(pid)
+                if anywhere or (path and canonical(path) == canonical(os.path.join(ROOT, image))):
+                    out[pid] = (image, path)
+    return out
+
+
+def refuse_if_other_games():
+    """start/launch: one game at a time on this PC, whoever started the other one"""
+    if ALLOW_OTHERS:
+        return
+    mine = canonical(os.path.join(ROOT, EXE))
+    running = processes(["Vita3K.exe"] + list(FRONTENDS), anywhere=True)
+    # Ad Hoc Play: players 2-4 start beside player 1's copy of the same front end
+    others = {pid: v for pid, v in running.items()
+              if not (PLAYER > 1 and v[1] and canonical(v[1]) == mine)}
+    if others:
+        lines = "\n".join(f"  pid {pid}: {path or image}" for pid, (image, path) in sorted(others.items()))
+        sys.exit("another game is running (close it first, or pass --allow-others):\n" + lines)
+
+
+def windows(with_image=False):
+    """(hwnd, title) for every visible top-level window owned by a Vita3K.exe or front-end process
+    started from ROOT; (hwnd, title, image) with with_image."""
+    out = []
+    pids = {pid: image for pid, (image, _) in processes(IMAGES).items()}
 
     @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
     def cb(hwnd, _):
@@ -128,8 +182,16 @@ def player_of(title):
     return int(m.group(1)) if m else 1
 
 
-def pipe_name():
-    return "v3kdrive" + (str(PLAYER) if PLAYER > 1 else "")
+def pipe_name(exe_path):
+    """the input pipe of the game started from exe_path (and of this player's copy)"""
+    h = hashlib.sha1(canonical(exe_path).encode("utf-8")).hexdigest()[:12]
+    return f"v3kdrive-{h}" + (f"-{PLAYER}" if PLAYER > 1 else "")
+
+
+def window_pid(hwnd):
+    pid = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    return pid.value
 
 
 def key(hwnd, name, down):
@@ -214,15 +276,30 @@ class Pad:
         if self.connected:
             return
         self.connected = True
+        pid = window_pid(self.hwnd)
+        path = process_path(pid)
+        if not path:
+            sys.exit(f"input: can't read the game window's process (pid {pid}); not sending input")
+        name = pipe_name(path)
         end = time.time() + 15
         while time.time() < end:
             try:
                 # O_WRONLY without O_CREAT opens the existing pipe; open(..., "w") would try to create it
-                self.pipe = os.fdopen(os.open(PIPE + pipe_name(), os.O_WRONLY | os.O_BINARY), "w", newline="\n")
-                break
+                fd = os.open(PIPE + name, os.O_WRONLY | os.O_BINARY)
             except OSError:
                 time.sleep(0.1)  # not created yet, or busy between clients
-        print("input:", "pipe" if self.pipe else "posted keys")
+                continue
+            # the pipe must be served by the game we found: input meant for it never goes elsewhere
+            server = wintypes.ULONG()
+            ok = ctypes.windll.kernel32.GetNamedPipeServerProcessId(
+                wintypes.HANDLE(msvcrt.get_osfhandle(fd)), ctypes.byref(server))
+            if not ok or server.value != pid:
+                os.close(fd)
+                sys.exit(f"input: pipe {name} is served by pid {server.value if ok else '?'}, not the "
+                         f"game window's {pid}; not sending input")
+            self.pipe = os.fdopen(fd, "w", newline="\n")
+            break
+        print("input:", f"pipe {name}" if self.pipe else "posted keys")
 
     def set(self, names):
         self.connect()
@@ -403,7 +480,10 @@ def main():
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(errors="backslashreplace")
-    global PLAYER
+    global PLAYER, ROOT, ALLOW_OTHERS
+    ALLOW_OTHERS = "--allow-others" in sys.argv
+    if ALLOW_OTHERS:
+        sys.argv.remove("--allow-others")
     player = take_option("--player")
     if player:
         PLAYER = int(player)
@@ -412,8 +492,10 @@ def main():
         print(__doc__)
         sys.exit(0 if sys.argv[1:2] in (["-h"], ["--help"]) else 2)
     root, cmd = sys.argv[1], sys.argv[2]
+    ROOT = root
     select_frontend(root, exe, title)
     if cmd == "launch":
+        refuse_if_other_games()
         exe = os.path.join(root, "Vita3K.exe")
         backend = sys.argv[4] if len(sys.argv) > 4 else "Vulkan"
         # -B is not reliable once config.yml holds a backend (a later -B Vulkan stayed on OpenGL),
@@ -422,12 +504,13 @@ def main():
         text = open(cfg, encoding="utf-8").read()
         open(cfg, "w", encoding="utf-8").write(
             re.sub(r"^backend-renderer: .*$", f"backend-renderer: {backend}", text, flags=re.M))
-        env = dict(os.environ, VITA3K_INPUT_PIPE="v3kdrive")
+        env = dict(os.environ, VITA3K_INPUT_PIPE=pipe_name(exe))
         subprocess.Popen([exe, "-B", backend, "-r", sys.argv[3]], cwd=root, env=env,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         wait_for_window()
     elif cmd == "start":
-        env = dict(os.environ, VITA3K_INPUT_PIPE=pipe_name())
+        refuse_if_other_games()
+        env = dict(os.environ, VITA3K_INPUT_PIPE=pipe_name(os.path.join(root, EXE)))
         args = ["--player", str(PLAYER)] if PLAYER > 1 else []
         subprocess.Popen([os.path.join(root, EXE)] + args, cwd=root, env=env,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -465,8 +548,9 @@ def main():
                 time.sleep(0.25)
             subprocess.run(["taskkill", "/PID", str(pid.value), "/F"], capture_output=True)
         if PLAYER == 1 and not others:
-            for image in IMAGES:
-                subprocess.run(["taskkill", "/IM", image, "/F"], capture_output=True)
+            # leftovers (a window that never showed): only processes started from this folder
+            for leftover in processes(IMAGES):
+                subprocess.run(["taskkill", "/PID", str(leftover), "/F"], capture_output=True)
 
 
 if __name__ == "__main__":
