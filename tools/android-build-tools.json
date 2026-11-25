@@ -18,7 +18,13 @@
    "file": "zig-aarch64-linux-0.17.1.tar.xz",
    "url": "https://ziglang.org/download/0.17.1/zig-aarch64-linux-0.17.1.tar.xz",
    "sha256": "a1546d5646eb184437918d6635ca6b762a0e889eac09cef720ee7a1ed3fe7795",
-   "size": 52977364
+   "size": 52977364,
+   "mirrors": [
+    "https://pkg.earth/zig/zig-aarch64-linux-0.17.1.tar.xz",
+    "https://zig.linus.dev/zig/zig-aarch64-linux-0.17.1.tar.xz",
+    "https://zig.vortan.dev/zig/zig-aarch64-linux-0.17.1.tar.xz",
+    "https://pkg.hexops.org/zig/zig-aarch64-linux-0.17.1.tar.xz"
+   ]
   },
   {
    "kind": "capstone",

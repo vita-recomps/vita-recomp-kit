@@ -10,6 +10,10 @@
    "sha256": "b03f477a1943673e02aca0f570e8030dffd536ce1f45cbc4d3326ec31159562e",
    "size": 100343666,
    "mirrors": [
+    "https://pkg.earth/zig/zig-x86_64-windows-0.17.1.zip",
+    "https://zig.linus.dev/zig/zig-x86_64-windows-0.17.1.zip",
+    "https://zig.vortan.dev/zig/zig-x86_64-windows-0.17.1.zip",
+    "https://pkg.hexops.org/zig/zig-x86_64-windows-0.17.1.zip",
     "https://web.archive.org/web/20261104133744id_/https://ziglang.org/download/0.17.1/zig-x86_64-windows-0.17.1.zip",
     "https://web.archive.org/web/20261107034428id_/https://ziglang.org/download/0.17.1/zig-x86_64-windows-0.17.1.zip"
    ]

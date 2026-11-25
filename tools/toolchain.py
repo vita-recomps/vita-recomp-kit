@@ -24,7 +24,7 @@ docs/09-android.md).
 
 zig keeps what it builds on first use (libc++) in <dir>/cache/, removed after each build.
 """
-import concurrent.futures, glob, hashlib, json, os, shutil, subprocess, sys, tarfile, urllib.error, urllib.request, zipfile
+import concurrent.futures, glob, hashlib, json, os, shutil, subprocess, sys, tarfile, time, urllib.error, urllib.request, zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import offline  # noqa: E402
@@ -70,14 +70,34 @@ def windows_curl():
     return curl if sys.platform == 'win32' and os.path.exists(curl) else ''
 
 
-def get(url, path=None):
+# A source slower than this over a 30-second stretch is left for the next one, when there is one
+# (obtain): ziglang.org served zig at about 120 KB/s on 2026-11-25 while its community mirrors served
+# 10 MB/s. The last source has no floor, so a slow connection still gets the file.
+MIN_SPEED = 256 * 1024
+SPEED_WINDOW = 30
+
+
+def get(url, path=None, min_speed=0):
+    """url's content (path None) or url into path. min_speed (bytes/s): TimeoutError when a 30-second
+    stretch of the download comes in slower."""
     req = urllib.request.Request(url, headers={'User-Agent': USER_AGENT})
     try:
         with urllib.request.urlopen(req, timeout=120) as r:
             if path is None:
                 return r.read()
             with open(path, 'wb') as f:
-                shutil.copyfileobj(r, f, 1 << 20)
+                if not min_speed:
+                    shutil.copyfileobj(r, f, 1 << 20)
+                    return
+                start, got = time.monotonic(), 0
+                while chunk := r.read(1 << 16):
+                    f.write(chunk)
+                    got += len(chunk)
+                    elapsed = time.monotonic() - start
+                    if elapsed >= SPEED_WINDOW:
+                        if got < min_speed * elapsed:
+                            raise TimeoutError(f'slower than {min_speed // 1024} KB/s ({got / elapsed / 1024:.0f} KB/s)')
+                        start, got = time.monotonic(), 0
     except urllib.error.URLError as e:
         # On Windows, Python trusts only the root certificates already in Windows' store, and Windows
         # adds a newer root only when its own TLS first meets it. GitHub's release-asset servers chain
@@ -88,6 +108,8 @@ def get(url, path=None):
         if not (curl and 'CERTIFICATE_VERIFY_FAILED' in str(e.reason)):
             raise
         args = [curl, '-sSfL', '--retry', '3', '--connect-timeout', '60', '-A', USER_AGENT, url]
+        if min_speed:
+            args[1:1] = ['--speed-limit', str(min_speed), '--speed-time', str(SPEED_WINDOW)]
         quiet = {'creationflags': subprocess.CREATE_NO_WINDOW}  # no console flashing up over the setup's window
         if path is None:
             return subprocess.run(args, check=True, capture_output=True, **quiet).stdout
@@ -109,14 +131,15 @@ def obtain(p, local):
         return
     if offline.provide(local, p['size'], p['sha256']):
         return
-    # the lock file's URL, then its mirrors (copies of the same file; the SHA-256 is checked)
+    # the lock file's URL, then its mirrors (copies of the same file; the SHA-256 is checked); every
+    # source but the last is left for the next when it is slower than MIN_SPEED
     urls = [p['url']] + p.get('mirrors', [])
     errors = []
     for n, url in enumerate(urls):
         if n:
             print(f'  {p["file"]}: from a copy at {url.split("/")[2]}', flush=True)
         try:
-            get(url, local)
+            get(url, local, MIN_SPEED if n < len(urls) - 1 else 0)
             if os.path.getsize(local) == p['size'] and sha256(local) == p['sha256']:
                 return
             errors.append(f'{url.split("/")[2]}: wrong SHA-256 (damaged, or another file)')
