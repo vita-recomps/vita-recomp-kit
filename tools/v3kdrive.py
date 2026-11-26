@@ -12,7 +12,8 @@ its game window title starts with the game's name ("Soul Sacrifice Delta | ... F
 
 usage:
   python -I v3kdrive.py <vita3k dir> launch <TITLEID> [Vulkan|OpenGL]  start Vita3K and boot the app
-  python -I v3kdrive.py <vita3k dir> start                   start the front end (settings: its .ini)
+  python -I v3kdrive.py <vita3k dir> start [args...]         start the front end (settings: its .ini); args
+                                                             go to it, e.g. --set cheats.invincible=true
   python -I v3kdrive.py <vita3k dir> run "<steps>" [fps.csv]  run steps against the open window
   python -I v3kdrive.py <vita3k dir> bootseq <TITLEID> <name>  set BootSequence in the installed config.ini
                                                              (Soul Sacrifice Delta's debug boot)
@@ -512,6 +513,8 @@ def main():
         refuse_if_other_games()
         env = dict(os.environ, VITA3K_INPUT_PIPE=pipe_name(os.path.join(root, EXE)))
         args = ["--player", str(PLAYER)] if PLAYER > 1 else []
+        # anything after start goes to the front end, e.g. --set cheats.invincible=true for a run
+        args += sys.argv[3:]
         subprocess.Popen([os.path.join(root, EXE)] + args, cwd=root, env=env,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         wait_for_window()
