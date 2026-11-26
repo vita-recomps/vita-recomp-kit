@@ -38,7 +38,8 @@ directories and passes their paths in.
 | `tools/build-recomp.py` | builds a game project's `generated/<module>/` into `ssd_aot_<module>.dll`: MSVC + CMake + Ninja, or `--toolchain <dir>` without any of them |
 | `tools/toolchain.py`, `tools/toolchain-windows.json`, `tools/toolchain-linux.json`, `tools/toolchain-macos.json` | a compiler for the modules that needs no Visual Studio, Xcode or SDK: zig (MIT), pinned by size and SHA-256 in each platform's lock file; it builds Android's modules too |
 | `tools/install-game.py`, `tools/make-dist.py` | from the player's dump (firmware, game, patch, add-ons; pkgs with their licence) to a playable folder `dist/<name>/`, as the game's `game.json` describes it (`gameproject.py`); `--bin`, `--toolchain`, `--out` for a prebuilt front end, the downloaded toolchain and any folder |
-| `tools/fetch-firmware.py` | the PS Vita firmware Vita3K needs (3.74 and the font package) from Sony's update servers, checked by SHA-256 |
+| `tools/fetch-firmware.py` | the PS Vita firmware Vita3K needs (3.74 and the font package) from Sony's update servers, else the Wayback Machine's copies, else RetroBIOS's re-upload; whatever the source, kept only with the pinned size and SHA-256 |
+| `tools/tests/` | tests of the tools, run without the network (not part of a release: `make-setup.py` takes only `tools/*.py`) |
 | `tools/offline.py` | the setup's downloads taken from the player's own folders instead (`--offline`), matched by size and SHA-256 whatever their names; run alone, it lists which pinned downloads a folder holds |
 | `tools/make-setup.py`, `tools/setup-windows.json`, `tools/setup-linux.json`, `tools/setup-macos.json`, `tools/setup.py`, `tools/setupgui.py`, `tools/dumpinfo.py` | a game's release for players: the game's own folder with its front end and, in `setup/`, the importer: Python (Windows: the embeddable distribution; Linux and macOS: python-build-standalone) with capstone and PyYAML (pinned) and the kit; `setup.py` runs on the player's computer, started by the game (see below) |
 
@@ -63,6 +64,7 @@ Each script's docstring has the details.
 - `python -I tools/fetch-update.py <title id> [out dir]`
 - `proccap <pid> <out.wav> [--quiet]`; build: `cl /nologo /O2 /EHsc /std:c++20 proccap.cpp ole32.lib mmdevapi.lib`
 - `python -I tools/wavstats.py <run.wav> [window seconds] [csv out]`
+- `python -I tools/tests/test_fetch_firmware.py`: `fetch-firmware.py`'s download checks against a local server (the right file, a replaced one of the same size, larger and shorter ones, the mirror order; on Windows the curl.exe branch too); exit code 1 on a failure
 
 ## Building the recompiled modules
 
