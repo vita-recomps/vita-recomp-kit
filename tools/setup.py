@@ -532,6 +532,16 @@ def start_log(path):
     return log
 
 
+def step_error(folder):
+    """The front end's step-error.txt in the game's log folder: a line per part a failed install step
+    could not install, in words for the player; '' when it left none."""
+    try:
+        with open(os.path.join(folder, 'step-error.txt'), encoding='utf-8') as f:
+            return f.read().strip()
+    except OSError:
+        return ''
+
+
 def run_logged(cmd, on_line=None):
     """Run a tool with its output passed on (and so into the log), each line also to on_line."""
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -649,7 +659,11 @@ def main():
             print(f'installing {os.path.basename(g[0])}')
             cmd = [exe, '--game', out, '--vita-fs', os.path.join(out, 'fs'), '--install-content'] + g
             if run_logged(cmd):
-                sys.exit(f'installing {g[0]} failed (the game\'s log: {os.path.join(out, game["id"], "vita3k.log")})')
+                # the front end's own words for what failed (a licence for other content ...)
+                log = os.path.join(out, game['id'], 'vita3k.log')
+                why = step_error(os.path.join(out, game['id']))
+                sys.exit(f'installing {g[0]} failed: {why}\nMore in {log}' if why
+                         else f'installing {g[0]} failed (the game\'s log: {log})')
         warn_encrypted_addons(out)
         write_stamp(game, out, exe, parts)  # these parts now, so the same run again has nothing to do
         print('\ndone: installed')

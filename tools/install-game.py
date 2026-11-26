@@ -54,6 +54,16 @@ from gameproject import Project  # noqa: E402
 RECOMP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'recomp')
 
 
+def step_error(folder):
+    """The front end's step-error.txt in the game's log folder: a line per part it could not install,
+    in words for the player; '' when it left none."""
+    try:
+        with open(os.path.join(folder, 'step-error.txt'), encoding='utf-8') as f:
+            return f.read().strip()
+    except OSError:
+        return ''
+
+
 def main():
     # --install/--license/--zrif keep their order, so they are taken apart by hand
     argv = sys.argv[1:]
@@ -142,7 +152,10 @@ def main():
             args += ['--install-firmware', os.path.abspath(pup)]
         print('installing', ' '.join(os.path.basename(x) for x in a.firmware + content[1::2] if os.path.exists(x)))
         if front_end(args + content):
-            sys.exit(f'installation failed: see {os.path.join(bin_dir, p.id, "vita3k.log")}')
+            # the front end's own words for each part that failed (a licence for other content ...)
+            log = os.path.join(bin_dir, p.id, 'vita3k.log')
+            why = step_error(os.path.join(bin_dir, p.id))
+            sys.exit(f'installation failed: {why}\nMore in {log}' if why else f'installation failed: see {log}')
 
     # 2. a supported build
     title = p.installed_title(fs)
