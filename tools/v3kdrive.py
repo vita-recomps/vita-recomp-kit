@@ -58,6 +58,9 @@ Steps (comma separated):
                     window would get it, e.g. its own keys (front end; no focus needed)
   mouse:<dx>:<dy>[:ms]  move the mouse by (dx, dy) counts, spread over ms, as if the front end
                     had captured it (its mouse camera turns that into the right stick)
+  gpad:<inputs>[:ms]  hold gamepad inputs (SDL's names, + between them: south, dpup,
+                    leftshoulder, lefttrigger ...) on the front end's virtual gamepad, for ms or until
+                    the next gpad (gpad:none lets go); the game and the settings menu see a gamepad
   mark:<label>      label the following FPS samples in the CSV
 """
 import csv, ctypes, hashlib, msvcrt, os, re, subprocess, sys, time
@@ -429,6 +432,12 @@ def run(steps, fps_csv):
         elif step.startswith("touch:"):
             _, x, y, ms = step.split(":")
             pad.touch(float(x), float(y)); s.sleep(int(ms)); pad.touch(None, None); time.sleep(0.1)
+        elif step.startswith("gpad:"):
+            # gamepad inputs on the front end's virtual gamepad; held for ms, or until the next gpad
+            _, names, *ms = step.split(":")
+            pad.command("gamepad " + " ".join(names.split("+")))
+            if ms:
+                s.sleep(int(ms[0])); pad.command("gamepad none")
         elif step.startswith("mark:"):
             s.label = step[5:]
         elif step.startswith("hold:"):
