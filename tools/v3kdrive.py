@@ -54,6 +54,8 @@ Steps (comma separated):
   memwrite:<addr>:<bytes>  write bytes (hex, memory order, e.g. 00007a44 for 1000.0f) to guest
                     memory at a hex address (front end)
   menu              open or close the front end's settings menu
+  key:<name>        press and release a key by its SDL name (F5, F12 ...) as the front end's
+                    window would get it, e.g. its own keys (front end; no focus needed)
   mouse:<dx>:<dy>[:ms]  move the mouse by (dx, dy) counts, spread over ms, as if the front end
                     had captured it (its mouse camera turns that into the right stick)
   mark:<label>      label the following FPS samples in the CSV
@@ -386,6 +388,8 @@ def run(steps, fps_csv):
             pad.frame(step[6:])
         elif step == "menu":
             pad.command("menu")
+        elif step.startswith("key:"):
+            pad.command("key " + step[4:])
         elif step.startswith("mouse:"):
             # relative mouse motion, spread over ms (10 ms apart) like a hand's
             _, dx, dy, *ms = step.split(":")
