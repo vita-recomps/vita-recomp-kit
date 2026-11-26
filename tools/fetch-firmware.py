@@ -1,7 +1,8 @@
 """Download the PS Vita firmware Vita3K needs from Sony's own update servers, as Vita3K's guide does:
 the 3.74 system update and the font package, or, when Sony's server fails, the Wayback Machine's
-copies of the same files (MIRRORS). Each file is checked against its SHA-256. Nothing of the firmware
-is in this repository, and nothing downloaded here may be committed.
+copies of the same files and last a third party's re-upload (MIRRORS). Whatever the source, a file
+is kept only with the size and SHA-256 pinned here. Nothing of the firmware is in this repository,
+and nothing downloaded here may be committed.
 
 A copy the player already has is used instead of a download (offline.py): --offline takes a
 folder (searched with its subfolders) or a file, matched by size and SHA-256 whatever its name.
@@ -11,7 +12,6 @@ usage:
 """
 import hashlib
 import os
-import shutil
 import subprocess
 import sys
 import urllib.error
@@ -34,9 +34,19 @@ FIRMWARE = [
 # 2025-07-15 copy downloaded and its SHA-256 checked). Never the newest snapshot by itself: PSP2UPDAT's
 # of 2026-02-27 is another file. The SHA-256 is checked anyway.
 WAYBACK = 'https://web.archive.org/web/{}id_/{}'
+# Last, when Sony and the Wayback Machine both fail: RetroBIOS's re-upload to a GitHub release
+# (github.com/Abdess/retrobios, release "large-files"; abdess.github.io/retrobios lists it). Untrusted:
+# a private person's copy, in a release that isn't immutable (2026-11-26), so its owner can replace a
+# file under the same name at any time. It is accepted only as download() accepts any URL, by the
+# size and SHA-256 pinned in FIRMWARE, never by anything the mirror says about itself (its page's
+# hashes, GitHub's asset digest). Both files were downloaded and matched on 2026-11-26. Its plain
+# PSP2UPDAT.PUP is another revision (56,778,752 bytes); Sony's 3.74 file is the variant ".3ae832c9".
+RETROBIOS = 'https://github.com/Abdess/retrobios/releases/download/large-files/{}'
 MIRRORS = {
-    'PSVUPDAT.PUP': [WAYBACK.format(t, FIRMWARE[0][1]) for t in ('20250319110354', '20230212113342')],
-    'PSP2UPDAT.PUP': [WAYBACK.format(t, FIRMWARE[1][1]) for t in ('20250715044721', '20220707235317')],
+    'PSVUPDAT.PUP': [WAYBACK.format(t, FIRMWARE[0][1]) for t in ('20250319110354', '20230212113342')]
+    + [RETROBIOS.format('PSVUPDAT.PUP')],
+    'PSP2UPDAT.PUP': [WAYBACK.format(t, FIRMWARE[1][1]) for t in ('20250715044721', '20220707235317')]
+    + [RETROBIOS.format('PSP2UPDAT.PUP.3ae832c9')],
 }
 
 
@@ -48,22 +58,59 @@ def sha256(path):
     return h.hexdigest()
 
 
-def download(url, part):
+def download(url, part, size, digest):
+    """url into part, accepted only as the pinned file: a different size announced is refused before
+    any byte is read, reading stops at the first byte past the pinned size, and the SHA-256 is taken
+    while reading. Raises ValueError when the file isn't the pinned one (part is then removed), OSError
+    for a network failure; on return part holds exactly the pinned file."""
+    try:
+        _download(url, part, size, digest)
+    except BaseException:
+        if os.path.exists(part):
+            os.remove(part)
+        raise
+
+
+def _download(url, part, size, digest):
     req = urllib.request.Request(url, headers={'User-Agent': 'vita-recomp-kit fetch-firmware.py'})
     try:
-        with urllib.request.urlopen(req, timeout=120) as r, open(part, 'wb') as f:
-            shutil.copyfileobj(r, f, 1 << 20)
+        with urllib.request.urlopen(req, timeout=120) as r:
+            announced = r.headers.get('Content-Length')
+            if announced is not None and announced.strip().isdigit() and int(announced) != size:
+                raise ValueError(f'announces {int(announced):,} bytes, not the pinned {size:,} (another file)')
+            h, got = hashlib.sha256(), 0
+            with open(part, 'wb') as f:
+                while chunk := r.read(min(1 << 20, size + 1 - got)):
+                    got += len(chunk)
+                    if got > size:
+                        raise ValueError(f'more than the pinned {size:,} bytes (another file)')
+                    h.update(chunk)
+                    f.write(chunk)
     except urllib.error.URLError as e:
         # Windows: Python checks certificates against the local store only (Windows fetches a
-        # missing intermediate certificate on demand for its own programs): Windows' curl.exe
+        # missing intermediate certificate on demand for its own programs): Windows' curl.exe, held to
+        # the pinned size too (--max-filesize stops a larger announced file; checked again below)
         curl = os.path.join(os.environ.get('SystemRoot', r'C:\Windows'), 'System32', 'curl.exe')
         if not (sys.platform == 'win32' and 'CERTIFICATE_VERIFY_FAILED' in str(e) and os.path.exists(curl)):
             raise
         # (no console flashing up over the setup's window)
-        code = subprocess.run([curl, '-sSfL', '--retry', '3', '-A', 'vita-recomp-kit fetch-firmware.py',
-                               '-o', part, url], creationflags=subprocess.CREATE_NO_WINDOW).returncode
+        code = subprocess.run([curl, '-sSfL', '--retry', '3', '--max-filesize', str(size),
+                               '-A', 'vita-recomp-kit fetch-firmware.py', '-o', part, url],
+                              creationflags=subprocess.CREATE_NO_WINDOW).returncode
+        if code == 63:  # CURLE_FILESIZE_EXCEEDED: --max-filesize
+            raise ValueError(f'more than the pinned {size:,} bytes (another file)') from e
         if code:
             raise OSError(f'curl.exe exit code {code}') from e
+        got = os.path.getsize(part)
+        if got != size:
+            raise ValueError(f'{got:,} bytes, not the pinned {size:,} (damaged, or another file)') from e
+        if sha256(part) != digest:
+            raise ValueError('wrong SHA-256 (damaged, or another file)') from e
+        return
+    if got != size:
+        raise ValueError(f'{got:,} bytes, not the pinned {size:,} (cut short, or another file)')
+    if h.hexdigest() != digest:
+        raise ValueError('wrong SHA-256 (damaged, or another file)')
 
 
 def fetch(dest, offline_paths=()):
@@ -82,15 +129,15 @@ def fetch(dest, offline_paths=()):
                 print(f'downloading {name} ({size / 2**20:.0f} MB) from '
                       + ('Sony' if n == 0 else f'a copy of Sony\'s file ({u.split("/")[2]})'), flush=True)
                 try:
-                    download(u, path + '.part')
-                except (OSError, ValueError) as e:  # URLError, timeouts, curl.exe's failure
+                    # (the pinned size and SHA-256 or nothing: download() removes anything else)
+                    download(u, path + '.part', size, digest)
+                except (OSError, ValueError) as e:  # URLError, timeouts, curl.exe's failure, another file
                     errors.append(f'{u.split("/")[2]}: {e}')
+                    if isinstance(e, ValueError):
+                        print(f'  refused: {e}', flush=True)
                     continue
-                if sha256(path + '.part') == digest:
-                    os.replace(path + '.part', path)
-                    break
-                os.remove(path + '.part')
-                errors.append(f'{u.split("/")[2]}: wrong SHA-256 (damaged, or another file)')
+                os.replace(path + '.part', path)
+                break
             else:
                 sys.exit(offline.missing(name, size, digest, urls, '; '.join(errors)))
         paths.append(path)
