@@ -85,7 +85,7 @@ def check(a, p):
     say('done')
 
 
-def build(a, p):
+def build_on_device(a, p):
     fs = os.path.join(a.game, 'fs')
     title = p.installed_title(fs)
     if not title:
@@ -137,6 +137,150 @@ def build(a, p):
     print(f'built in {(time.time() - start) / 60:.1f} min', flush=True)
     say('done')
 
+
+def user_import_root():
+
+    return os.path.abspath(os.path.join(KIT, '..', '..'))
+
+def install_imported_modules(a, p):
+
+    import zipfile
+
+    check(a, p)
+
+    archive = os.path.join(user_import_root(), 'arm64-import.zip')
+
+    if not os.path.isfile(archive):
+
+        fail('No ARM64 modules imported. Open Offline imports, select the modules ZIP/folder, or choose Compile on this device.')
+
+    expected = {toolchain.DLL_PREFIX + m + '.so' for m in p.modules.values()}
+
+    stage = os.path.join(os.path.abspath(a.work), 'validated-arm64')
+
+    os.makedirs(stage, exist_ok=True)
+
+    try:
+
+        with zipfile.ZipFile(archive) as package:
+
+            names = package.namelist()
+
+            if len(names) != len(set(names)) or set(names) != expected | {'modules.json'}:
+
+                fail('The imported ARM64 module set is incomplete or contains duplicate/unexpected entries')
+
+            info = package.getinfo('modules.json')
+
+            if info.file_size > 65536:
+
+                fail('Imported module manifest too large')
+
+            records = json.loads(package.read(info))
+
+            if set(records) != expected:
+
+                fail('Imported manifest does not match this project')
+
+            total = 0
+
+            for name in sorted(expected):
+
+                info = package.getinfo(name)
+
+                total += info.file_size
+
+                if not 64 <= info.file_size <= 256 * 2**20 or total > 512 * 2**20:
+
+                    fail('Invalid imported module size: ' + name)
+
+                if records[name]['bytes'] != info.file_size:
+
+                    fail('Imported manifest size mismatch: ' + name)
+
+                digest = hashlib.sha256()
+
+                target = os.path.join(stage, name)
+
+                with package.open(info) as source, open(target, 'wb') as out:
+
+                    header = source.read(64)
+
+                    if (header[:7] != b'\x7fELF\x02\x01\x01' or
+
+                            int.from_bytes(header[16:18], 'little') != 3 or
+
+                            int.from_bytes(header[18:20], 'little') != 183):
+
+                        fail('Not an ARM64 shared library: ' + name)
+
+                    digest.update(header)
+
+                    out.write(header)
+
+                    size = len(header)
+
+                    for chunk in iter(lambda: source.read(65536), b''):
+
+                        size += len(chunk)
+
+                        if size > info.file_size:
+
+                            fail('Imported module exceeds declared size: ' + name)
+
+                        digest.update(chunk)
+
+                        out.write(chunk)
+
+                if size != info.file_size or digest.hexdigest() != records[name]['sha256']:
+
+                    fail('Imported module integrity mismatch: ' + name)
+
+        # All modules pass before any installed library is replaced.
+
+        say('step', 'Installing imported ARM64 modules (no phone compilation)')
+
+        for name in sorted(expected):
+
+            destination = os.path.join(a.game, name)
+
+            shutil.copyfile(os.path.join(stage, name), destination + '.arm-new')
+
+        for name in sorted(expected):
+
+            destination = os.path.join(a.game, name)
+
+            os.replace(destination + '.arm-new', destination)
+
+        record = os.path.join(a.game, 'android-build.json')
+
+        with open(record + '.new', 'w', encoding='utf-8') as out:
+
+            json.dump({'stamp': a.stamp, 'title': p.installed_title(os.path.join(a.game, 'fs')),
+
+                       'source': 'User-imported ARM64', 'modules': records}, out, indent=1)
+
+        os.replace(record + '.new', record)
+
+        print('Imported ARM64 modules installed; the runtime also verifies its code hash and ABI at load time', flush=True)
+
+        say('done')
+
+    finally:
+
+        shutil.rmtree(stage, ignore_errors=True)
+
+def build(a, p):
+
+    archive = os.path.join(user_import_root(), 'arm64-import.zip')
+
+    if os.path.isfile(archive):
+
+        return install_imported_modules(a, p)
+
+    say('step', 'No ARM64 modules imported: compiling on this device')
+
+    return build_on_device(a, p)
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
