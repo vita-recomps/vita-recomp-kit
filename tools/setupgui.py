@@ -444,7 +444,8 @@ class AndroidWindow(Window):
         self.stages = ANDROID_STAGES
         self.stage = tk.StringVar(value='')
         self.extra_args = []
-        self.accepted = tk.BooleanVar(value=False)
+        self.installed_adb = droid.find_adb(required=False)
+        self.accepted = tk.BooleanVar(value=bool(self.installed_adb))
         self.way = tk.StringVar(value='wifi')
         self.pair = tk.StringVar()
         self.code = tk.StringVar()
@@ -494,11 +495,15 @@ class AndroidWindow(Window):
 
         lic = ttk.Frame(f)
         lic.grid(sticky='w', pady=(10, 0))
-        ttk.Checkbutton(lic, variable=self.accepted, text='I accept Google\'s Android SDK licence for adb, the '
-                        'tool that copies the game').grid(row=0, column=0)
-        link = ttk.Label(lic, text='(read it)', foreground='blue', cursor='hand2')
-        link.grid(row=0, column=1, padx=4)
-        link.bind('<Button-1>', lambda e: webbrowser.open(licence_url))
+        if self.installed_adb:
+            ttk.Label(lic, foreground='gray', wraplength=720, justify='left',
+                      text=f'Using installed adb: {self.installed_adb}').grid(row=0, column=0, sticky='w')
+        else:
+            ttk.Checkbutton(lic, variable=self.accepted, text='I accept Google\'s Android SDK licence for adb, the '
+                            'tool that copies the game').grid(row=0, column=0)
+            link = ttk.Label(lic, text='(read it)', foreground='blue', cursor='hand2')
+            link.grid(row=0, column=1, padx=4)
+            link.bind('<Button-1>', lambda e: webbrowser.open(licence_url))
         if self.have_modules:
             ttk.Checkbutton(f, variable=self.rebuild, text='Build the modules for Android again (needed after '
                             'building the game again on this computer)').grid(sticky='w', pady=(4, 0))
@@ -528,10 +533,12 @@ class AndroidWindow(Window):
             self.wifi.grid_remove()
 
     def start(self):
-        if not self.accepted.get():
+        if not self.installed_adb and not self.accepted.get():
             messagebox.showerror('Android device', 'adb needs Google\'s licence accepted.')
             return
-        args = ['--android', '--console', '--accept-android-sdk-license', '--exe', self.exe, *self.extra_args]
+        args = ['--android', '--console', '--exe', self.exe, *self.extra_args]
+        if not self.installed_adb:
+            args.append('--accept-android-sdk-license')
         if not self.rebuild.get():
             args.append('--push-only')
         pair, code, connect = (v.get().strip() for v in (self.pair, self.code, self.connect))

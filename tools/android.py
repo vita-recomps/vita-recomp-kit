@@ -33,6 +33,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -95,7 +96,7 @@ def fetch_adb(dest, accepted):
     return exe
 
 
-def find_adb(given):
+def find_adb(given=None, *, required=True):
     if given:
         return given
     found = shutil.which('adb')
@@ -112,7 +113,23 @@ def find_adb(given):
     for root in roots:
         if root and os.path.exists(os.path.join(root, 'platform-tools', exe)):
             return os.path.join(root, 'platform-tools', exe)
-    sys.exit('adb not found: install Android\'s platform-tools, or pass --adb')
+    if required:
+        sys.exit('adb not found: install Android\'s platform-tools, or pass --adb')
+    return ''
+
+
+def adb_server_in_use():
+    """Check before running an adb client, which can start or replace a server."""
+    if any(os.environ.get(name) for name in
+           ('ADB_SERVER_SOCKET', 'ANDROID_ADB_SERVER_ADDRESS', 'ANDROID_ADB_SERVER_PORT')):
+        return True  # an explicitly configured endpoint belongs to the caller
+    for address in ('127.0.0.1', '::1'):
+        try:
+            with socket.create_connection((address, 5037), timeout=0.5):
+                return True
+        except OSError:
+            continue
+    return False
 
 
 class Device:

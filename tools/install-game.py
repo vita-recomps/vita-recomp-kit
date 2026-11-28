@@ -44,6 +44,7 @@ import re
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import dumpinfo  # noqa: E402
@@ -151,6 +152,7 @@ def main():
         for pup in a.firmware:
             args += ['--install-firmware', os.path.abspath(pup)]
         print('installing', ' '.join(os.path.basename(x) for x in a.firmware + content[1::2] if os.path.exists(x)))
+        (Path(bin_dir) / p.id / 'step-error.txt').unlink(missing_ok=True)
         if front_end(args + content):
             # the front end's own words for each part that failed (a licence for other content ...)
             log = os.path.join(bin_dir, p.id, 'vita3k.log')

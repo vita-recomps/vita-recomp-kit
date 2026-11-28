@@ -73,6 +73,7 @@ import sys
 import tempfile
 import time
 import urllib.parse
+from pathlib import Path
 
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, TOOLS)
@@ -658,6 +659,7 @@ def main():
             step(0.10 + 0.85 * n / len(addons), 'Installing the add-ons and mods')
             print(f'installing {os.path.basename(g[0])}')
             cmd = [exe, '--game', out, '--vita-fs', os.path.join(out, 'fs'), '--install-content'] + g
+            (Path(out) / game['id'] / 'step-error.txt').unlink(missing_ok=True)
             if run_logged(cmd):
                 # the front end's own words for what failed (a licence for other content ...)
                 log = os.path.join(out, game['id'], 'vita3k.log')
@@ -869,8 +871,8 @@ def android(game, opts, exe, platform, interactive, built=False):
     modules = os.path.join(OUT, 'android')
     py = [sys.executable, '-I', '-u']
 
-    accepted = bool(opts.get('--accept-android-sdk-license'))
-    if not accepted:
+    installed_adb = droid.find_adb(required=False)
+    if not installed_adb and not opts.get('--accept-android-sdk-license'):
         with open(droid.LOCK, encoding='utf-8') as f:
             url = json.load(f)['license_url']
         print('\nThe game is copied to the device with adb, part of Google\'s Android SDK Platform-Tools, downloaded\n'
@@ -897,17 +899,29 @@ def android(game, opts, exe, platform, interactive, built=False):
         remove(os.path.join(OUT, game['id'], 'elfdumps'))
 
     print('\nandroid 2/3 adb')
-    adb = droid.fetch_adb(cache, True)
+    server_in_use = droid.adb_server_in_use()
+    if installed_adb:
+        adb = installed_adb
+        print(f'using installed adb: {adb}')
+    else:
+        adb = droid.adb_in(cache) if server_in_use else ''
+        if not adb:
+            adb = droid.fetch_adb(cache, True)
+        server_in_use = server_in_use or droid.adb_server_in_use()
+        if server_in_use:
+            print('An adb server is already running. The downloaded adb may replace it if the versions differ. '
+                  "If the wireless device disappears, reconnect it or put the running server's adb on PATH and retry.")
     print(f'\nandroid 3/3 copying the game to the device (minutes over Wi-Fi)')
     cmd = py + [os.path.join(TOOLS, 'android.py'), '--project', GAME, 'push', OUT, '--apk', apk, '--adb', adb]
     for k in ('--serial', '--pair', '--code', '--connect'):
         if opts.get(k):
             cmd += [k, opts[k]]
     code = run_logged(cmd)
-    # adb's server keeps running from the downloads: stopped, so they can go
-    subprocess.run([adb, 'kill-server'], capture_output=True)
-    time.sleep(1)
-    if not opts.get('--cache'):
+    # A server started from the downloaded client keeps its files open on Windows.
+    if not installed_adb and not server_in_use:
+        subprocess.run([adb, 'kill-server'], capture_output=True)
+        time.sleep(1)
+    if not opts.get('--cache') and (installed_adb or not server_in_use):
         remove(cache)
     if code:
         sys.exit('copying to the device failed (see above); the modules stay in '

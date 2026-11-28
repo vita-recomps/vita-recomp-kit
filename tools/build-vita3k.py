@@ -4,7 +4,7 @@ build/vita3k/bin/<config>/ (Vita3K.exe and the games' single-game front ends).
 
 usage:
   python -I build-vita3k.py [--project DIR] [--config RelWithDebInfo|Debug|Release] [--jobs N]
-                            [--reconfigure] [--no-jit] [--games-only] [--target NAME ...] [--qt DIR]
+                            [--reconfigure] [--configure-only] [--no-jit] [--games-only] [--target NAME ...] [--qt DIR]
 
   --project   the game project's root (default: the current directory)
   --no-jit    build without dynarmic (VITA3K_DYNARMIC=OFF: recompiled code only) into
@@ -57,16 +57,18 @@ def build_linux(a, src):
         compilers = ['-DCMAKE_C_COMPILER=' + env.get('CC', cc), '-DCMAKE_CXX_COMPILER=' + env.get('CXX', cxx)]
         static = '-static-libstdc++ -static-libgcc'
         platform = [f'-DCMAKE_EXE_LINKER_FLAGS={static}', f'-DCMAKE_SHARED_LINKER_FLAGS={static}']
-    if a.reconfigure or not os.path.exists(os.path.join(build, 'CMakeCache.txt')) \
+    if a.reconfigure or a.configure_only or not os.path.exists(os.path.join(build, 'CMakeCache.txt')) \
             or not os.path.exists(os.path.join(build, 'build.ninja')):
         r = subprocess.run(['cmake', '-S', src, '-B', build, '-G', 'Ninja Multi-Config', *compilers,
                             '-DVITA3K_DYNARMIC=' + ('OFF' if a.no_jit else 'ON'), '-DVITA3K_GAMES_ONLY=ON',
                             # the Discord SDK's headers don't build with GCC 14 (no <cstdint>), and it
                             # has no arm64 macOS library
                             '-DUSE_DISCORD_RICH_PRESENCE=OFF', f'-DPython3_EXECUTABLE={sys.executable}',
-                            *platform], env=env)
+                            *platform, *configure_options(a)], env=env)
         if r.returncode:
             sys.exit('cmake configure failed')
+    if a.configure_only:
+        return
     cmd = ['cmake', '--build', build, '--config', a.config]
     if a.jobs:
         cmd += ['-j', str(a.jobs)]
@@ -78,12 +80,18 @@ def build_linux(a, src):
     print(f'build ({a.config}) finished in {(time.time() - start) / 60:.1f} min: {os.path.join(build, "bin", a.config)}')
 
 
+def configure_options(args):
+    return ['-DVITA3K_RUNTIME_TESTS=ON'] if args.runtime_tests else []
+
+
 def main():
     ap = argparse.ArgumentParser(usage=__doc__)
     ap.add_argument('--project', default=os.getcwd())
     ap.add_argument('--config', default='RelWithDebInfo', choices=['RelWithDebInfo', 'Debug', 'Release'])
     ap.add_argument('--jobs', type=int, default=0)
     ap.add_argument('--reconfigure', action='store_true')
+    ap.add_argument('--configure-only', action='store_true', help='configure and exit before compiling')
+    ap.add_argument('--runtime-tests', action='store_true', help='enable CTest pause and queue targets on configure')
     ap.add_argument('--no-jit', action='store_true')
     ap.add_argument('--games-only', action='store_true')
     ap.add_argument('--target', nargs='*', default=[])
@@ -114,7 +122,7 @@ def main():
         env['Qt6_ROOT'] = qt
     # Vita3K's presets set this for older external CMakeLists
     env['CMAKE_POLICY_VERSION_MINIMUM'] = '3.5'
-    if a.reconfigure or not os.path.exists(os.path.join(build, 'CMakeCache.txt')) \
+    if a.reconfigure or a.configure_only or not os.path.exists(os.path.join(build, 'CMakeCache.txt')) \
             or not os.path.exists(os.path.join(build, 'build.ninja')):
         # The first configure bootstraps Boost's b2, whose build.bat runs 'call guess_toolset.bat'
         # from its own folder; that fails when NoDefaultCurrentDirectoryInExePath is set
@@ -125,9 +133,12 @@ def main():
         r = subprocess.run(['cmake', '-S', src, '-B', build, '-G', 'Ninja Multi-Config',
                             '-DCMAKE_C_COMPILER=cl', '-DCMAKE_CXX_COMPILER=cl',
                             '-DVITA3K_DYNARMIC=' + ('OFF' if a.no_jit else 'ON'),
-                            '-DVITA3K_GAMES_ONLY=' + ('ON' if a.games_only else 'OFF')], env=configure_env)
+                            '-DVITA3K_GAMES_ONLY=' + ('ON' if a.games_only else 'OFF'),
+                            *configure_options(a)], env=configure_env)
         if r.returncode:
             sys.exit('cmake configure failed')
+    if a.configure_only:
+        return
     cmd = ['cmake', '--build', build, '--config', a.config]
     if a.jobs:
         cmd += ['-j', str(a.jobs)]

@@ -386,8 +386,8 @@ class Inventory:
                         c['returns'] += 1
                         if not pushed_lr:
                             flags.add('pc_pop_without_lr_push')
-                    elif not thumb and m.startswith(('add', 'ldr')) and 'pc, pc' in ops.replace('[', '') and last_cmp:
-                        self.decode_arm_table(a, start, end, m, ops, last_cmp, work)
+                    elif not thumb and m.startswith(('add', 'ldr')) and 'pc, pc' in ops.replace('[', '') \
+                            and last_cmp and self.decode_arm_table(a, start, end, m, ops, last_cmp, work):
                         c['jumptables'] += 1
                         addr = nxt  # the default case follows the table instruction
                         continue
@@ -639,7 +639,15 @@ class Inventory:
 
     def decode_arm_table(self, a, start, end, m, ops, last_cmp, work):
         # addls pc, pc, rN, lsl #2 (a branch per case) / ldrls pc, [pc, rN, lsl #2] (a word per case)
+        parts = [part.strip() for part in ops.replace('[', '').replace(']', '').split(',')]
+        if len(parts) != 4 or parts[:2] != ['pc', 'pc'] or parts[3] != 'lsl #2':
+            return False
+        index = parts[2]
+        if index != last_cmp[0]:
+            return False
         count = last_cmp[1] + 1
+        if count <= 0 or count > 4096:
+            return False
         table = a + 8
         targets = []
         for k in range(count):
@@ -653,9 +661,10 @@ class Inventory:
             if start <= t < end:
                 work.append((t, 0, {}, None))
         self.jumptables.append(dict(site=f'{a:#x}', func=f'{start:#x}', kind='arm_' + m, base='pc',
-                                    index=last_cmp[0], count=count, count_source='cmp',
+                                    index=index, count=count, count_source='cmp',
                                     targets_out_of_function=sum(1 for t in targets if not start <= t < end),
                                     targets=' '.join(f'{t:#x}' for t in targets)))
+        return True
 
     def address_taken(self):
         """function starts referenced by data words (all loaded segments outside decoded code) and

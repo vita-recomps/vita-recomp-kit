@@ -46,11 +46,11 @@ ZIG_CXXFLAGS = ['-std=c++20', '-O2', *([] if WINDOWS else ['-fPIC']), '-fvisibil
 # no contraction, as in recomp/CMakeLists.txt: ARMv7's vmla/vmls round twice (it matters on arm64 hosts)
 ZIG_GEN_FLAGS = ['-O1', '-w', '-ffp-contract=off', '-DRECOMP_COUNT_INSNS']
 # a module exports its entry points (armrecomp_aot_init, armrecomp_aot_features) and nothing else
-# (libc++'s operator new/delete stay inside). zig's Mach-O linker takes no export list: there, hidden
-# visibility leaves the entry points and libc++'s operator new/delete, which two-level namespaces keep
-# from binding anything outside the module. Windows: the entry points' __declspec(dllexport)
+# (libc++'s operator new/delete stay inside). On macOS narrow Zig's export trie after linking and
+# renew its ad-hoc signature with the system's codesign. Windows: the entry points' __declspec(dllexport)
 # (aot_dll.cpp), with which lld exports nothing else
 ZIG_EXPORTS = '{\n  global: armrecomp_aot_init; armrecomp_aot_features;\n  local: *;\n};\n'
+MACHO_EXPORTS = ('_armrecomp_aot_features', '_armrecomp_aot_init')
 # Android: arm64 with musl's headers (the functions a module calls have the same ABI in bionic), every
 # ARMv8 (LL/SC atomics inline: no outline atomics, which would want compiler-rt and getauxval), unwind
 # tables for the escapes the host throws through generated frames, no stack protector (bionic's guard
@@ -72,9 +72,13 @@ def windows_curl():
 
 # A source slower than this over a 30-second stretch is left for the next one, when there is one
 # (obtain): ziglang.org served zig at about 120 KB/s on 2026-11-25 while its community mirrors served
-# 10 MB/s. The last source has no floor, so a slow connection still gets the file.
+# 10 MB/s. The last source and retries of slow sources have no floor.
 MIN_SPEED = 256 * 1024
 SPEED_WINDOW = 30
+
+
+class SlowDownload(TimeoutError):
+    pass
 
 
 def get(url, path=None, min_speed=0):
@@ -96,7 +100,7 @@ def get(url, path=None, min_speed=0):
                     elapsed = time.monotonic() - start
                     if elapsed >= SPEED_WINDOW:
                         if got < min_speed * elapsed:
-                            raise TimeoutError(f'slower than {min_speed // 1024} KB/s ({got / elapsed / 1024:.0f} KB/s)')
+                            raise SlowDownload(f'slower than {min_speed // 1024} KB/s ({got / elapsed / 1024:.0f} KB/s)')
                         start, got = time.monotonic(), 0
     except urllib.error.URLError as e:
         # On Windows, Python trusts only the root certificates already in Windows' store, and Windows
@@ -107,13 +111,22 @@ def get(url, path=None, min_speed=0):
         curl = windows_curl()
         if not (curl and 'CERTIFICATE_VERIFY_FAILED' in str(e.reason)):
             raise
-        args = [curl, '-sSfL', '--retry', '3', '--connect-timeout', '60', '-A', USER_AGENT, url]
+        args = [curl, '-sSfL', '--connect-timeout', '60', '-A', USER_AGENT, url]
         if min_speed:
             args[1:1] = ['--speed-limit', str(min_speed), '--speed-time', str(SPEED_WINDOW)]
+        else:
+            args[1:1] = ['--retry', '3']
         quiet = {'creationflags': subprocess.CREATE_NO_WINDOW}  # no console flashing up over the setup's window
         if path is None:
             return subprocess.run(args, check=True, capture_output=True, **quiet).stdout
-        subprocess.run(args + ['-o', path], check=True, **quiet)
+        result = subprocess.run(args + ['-o', path], stderr=subprocess.PIPE, text=True, errors='replace', **quiet)
+        if result.returncode:
+            why = result.stderr.strip()
+            # Curl uses 28 for both low speed and a connection timeout. Retrying either
+            # once without a speed floor lets a slow source succeed if its mirror fails.
+            if min_speed and result.returncode == 28:
+                raise SlowDownload(why)
+            raise OSError(why or f'curl failed (exit {result.returncode})')
 
 
 def sha256(path):
@@ -135,14 +148,21 @@ def obtain(p, local):
     # source but the last is left for the next when it is slower than MIN_SPEED
     urls = [p['url']] + p.get('mirrors', [])
     errors = []
-    for n, url in enumerate(urls):
-        if n:
+    attempts = [(url, MIN_SPEED if i < len(urls) - 1 else 0) for i, url in enumerate(urls)]
+    for n, (url, min_speed) in enumerate(attempts):
+        if n >= len(urls):
+            print(f'  {p["file"]}: retrying {url.split("/")[2]} without a speed floor', flush=True)
+        elif n:
             print(f'  {p["file"]}: from a copy at {url.split("/")[2]}', flush=True)
         try:
-            get(url, local, MIN_SPEED if n < len(urls) - 1 else 0)
+            get(url, local, min_speed)
             if os.path.getsize(local) == p['size'] and sha256(local) == p['sha256']:
                 return
             errors.append(f'{url.split("/")[2]}: wrong SHA-256 (damaged, or another file)')
+        except SlowDownload as e:
+            if min_speed:
+                attempts.append((url, 0))
+            errors.append(f'{url.split("/")[2]}: {e}')
         except (OSError, ValueError, subprocess.CalledProcessError) as e:  # URLError, timeouts, curl.exe
             errors.append(f'{url.split("/")[2]}: {e}')
         if os.path.exists(local):
@@ -340,6 +360,8 @@ def build_modules_zig(gen, modules, build, toolchain_dir, jobs=4, defines=(), an
             continue
         if os.path.exists(lib):
             os.remove(lib)  # ar adds to an existing archive
+        finalize_macho = MACOS and not android
+        link_output = so + '.tmp' if finalize_macho else so
         err = run([zig, 'ar', 'rcs', lib, *objs], env)
         if err is None:
             if android:
@@ -348,9 +370,22 @@ def build_modules_zig(gen, modules, build, toolchain_dir, jobs=4, defines=(), an
             else:
                 unused = (['-Wl,-dead_strip'] if MACOS else ['-Wl,--gc-sections'] if WINDOWS else
                           [f'-Wl,--version-script,{exports}', '-Wl,--gc-sections'])
-                err = run([zig, 'c++', *ZIG_TARGET, '-shared', *unused, '-s', '-o', so, entry, lib], env)
+                err = run([zig, 'c++', *ZIG_TARGET, '-shared', *unused, '-s', '-o', link_output, entry, lib], env)
         if err is not None:
             sys.exit(f'{m}: linking failed\n{err}')
+        if finalize_macho:
+            from macho_exports import restrict_exports
+            try:
+                restrict_exports(link_output, MACHO_EXPORTS)
+                err = run(['/usr/bin/codesign', '--force', '--sign', '-', link_output], env)
+                if err is not None:
+                    raise ValueError(err)
+                os.replace(link_output, so)
+            except (IndexError, OSError, ValueError) as e:
+                sys.exit(f'{m}: finalizing the macOS exports failed\n{e}')
+            finally:
+                if os.path.exists(link_output):
+                    os.remove(link_output)
         if android:
             problem = check_android_module(so)
             if problem:
